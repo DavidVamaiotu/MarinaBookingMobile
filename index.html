@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+  <title>Marina Booking Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="toolbar">
+      <div class="brand"><img src="assets/marina-park-logo.png" alt=""><div><strong>Marina Booking</strong><span>WordPress reservations</span></div></div>
+      <div class="toolbar-actions">
+        <button class="sync-indicator" id="syncIndicator" type="button" aria-label="Open sync diagnostics"><span class="status-dot"></span><span id="syncText">Offline</span><small id="syncCounts">0 queued</small></button>
+        <button class="secondary" id="openSettings" type="button">Settings</button>
+        <button class="primary" id="openCreate" type="button">New booking</button>
+      </div>
+    </header>
+
+    <section class="timeline-panel" aria-labelledby="timelineTitle">
+      <div class="timeline-header">
+        <div><p>Reservation workspace</p><h1 id="timelineTitle">Timeline</h1></div>
+        <div class="month-controls">
+          <button id="prevMonth" type="button" aria-label="Previous month">‹</button>
+          <strong id="monthLabel"></strong>
+          <button id="nextMonth" type="button" aria-label="Next month">›</button>
+          <button class="secondary compact" id="today" type="button">Today</button>
+          <button class="secondary compact" id="refresh" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="banner" id="banner" hidden></div>
+      <div class="timeline-shell" id="timelineShell" tabindex="0" aria-label="Booking timeline">
+        <div class="timeline-scale" id="timelineScale"></div>
+        <div class="guest-timeline" id="guestTimeline"></div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="side-panel" id="detailsPanel" aria-labelledby="detailsTitle" hidden>
+    <header><div><p>Booking details</p><h2 id="detailsTitle">Reservation</h2></div><button class="icon" data-close="detailsPanel" type="button">×</button></header>
+    <form id="detailsForm" class="panel-form">
+      <div class="sync-card" id="bookingSyncState"></div>
+      <div class="field-grid"><label>Name<input name="name" required></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
+      <label>Resource<select name="resourceId" required></select></label>
+      <div class="field-grid"><label>Arrival<input name="start" type="date" required></label><label>Departure / last date<input name="end" type="date" required></label></div>
+      <label>Internal note<textarea name="note" rows="4"></textarea></label>
+      <label class="check"><input name="sendEmail" type="checkbox"> Send WordPress email for status/trash action</label>
+      <dl class="facts" id="bookingFacts"></dl>
+      <div class="button-row"><button class="primary" type="submit">Save changes</button><button class="secondary" id="toggleStatus" type="button"></button></div>
+      <button class="danger" id="toggleTrash" type="button"></button>
+      <section><h3>Local command history</h3><div class="command-list compact-list" id="bookingCommands"></div></section>
+    </form>
+  </aside>
+
+  <dialog id="createDialog">
+    <form id="createForm" class="panel-form" method="dialog">
+      <header><div><p>Create booking</p><h2>New reservation</h2></div><button class="icon" value="cancel">×</button></header>
+      <div class="field-grid"><label>Name<input name="name" required></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
+      <label>Resource<select name="resourceId" required></select></label>
+      <div class="field-grid"><label>Arrival<input name="start" type="date" required></label><label>Departure / last date<input name="end" type="date" required></label></div>
+      <div class="availability" id="createAvailability">Availability will be checked in the background.</div>
+      <label>Internal note<textarea name="note" rows="3"></textarea></label>
+      <label class="check"><input name="approved" type="checkbox" checked> Approved</label>
+      <label class="check"><input name="sendEmail" type="checkbox"> Send WordPress email</label>
+      <footer><button class="secondary" value="cancel">Cancel</button><button class="primary" id="createSubmit" type="submit">Queue booking</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm" class="panel-form" method="dialog" autocomplete="off">
+      <header><div><p>Connection</p><h2>Settings</h2></div><button class="icon" value="cancel">×</button></header>
+      <label>API base URL<input name="apiBaseUrl" type="url" placeholder="https://example.com/wp-json/marina-booking/v1" required></label>
+      <label>API username<input name="username" autocomplete="off" required></label>
+      <label>Application Password<input name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved credential"></label>
+      <label>Site timezone<input name="timezone" value="Europe/Bucharest" required></label>
+      <div class="settings-status" id="settingsStatus"></div>
+      <footer><button class="danger subtle" id="clearCredentials" type="button">Clear local credentials</button><span></span><button class="secondary" id="testConnection" type="button">Test connection</button><button class="primary" type="submit">Save</button></footer>
+    </form>
+  </dialog>
+
+  <aside class="diagnostics" id="diagnostics" hidden>
+    <header><div><p>Durable local queue</p><h2>Sync diagnostics</h2></div><button class="icon" data-close="diagnostics" type="button">×</button></header>
+    <div class="diagnostic-summary" id="diagnosticSummary"></div>
+    <div class="command-list" id="commandList"></div>
+  </aside>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="src/shared/timeline-adapter.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

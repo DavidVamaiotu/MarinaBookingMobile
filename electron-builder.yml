@@ -1,0 +1,35 @@
+appId: ro.marinapark.booking.desktop
+productName: Marina Booking Desktop
+asar: true
+compression: maximum
+npmRebuild: false
+
+directories:
+  output: dist-electron
+  buildResources: assets
+
+files:
+  - electron-main.js
+  - preload.js
+  - app.js
+  - index.html
+  - styles.css
+  - package.json
+  - src/**/*
+  - assets/**/*
+  - fonts/**/*
+
+win:
+  icon: assets/marina-park.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: MarinaBookingDesktop-Setup-${version}.${ext}
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
