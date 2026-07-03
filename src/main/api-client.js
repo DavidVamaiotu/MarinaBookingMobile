@@ -9,6 +9,7 @@ class ApiError extends Error {
 }
 
 function normalizeBaseUrl(value, { allowHttpLocalhost = true } = {}) {
+  const namespace = "/wp-json/marina-booking/v1";
   let url;
   try {
     url = new URL(String(value || "").trim().replace(/\/+$/, ""));
@@ -19,10 +20,11 @@ function normalizeBaseUrl(value, { allowHttpLocalhost = true } = {}) {
   if (url.protocol !== "https:" && !(allowHttpLocalhost && local)) {
     throw new ApiError("Production API URLs must use HTTPS.", { code: "https_required", permanent: true });
   }
-  if (!url.pathname.endsWith("/wp-json/marina-booking/v1")) {
-    throw new ApiError("API URL must end with /wp-json/marina-booking/v1.", { code: "invalid_api_path", permanent: true });
-  }
-  return url.toString().replace(/\/$/, "");
+  const sitePath = url.pathname.replace(/\/+$/, "");
+  url.pathname = sitePath.endsWith(namespace) ? sitePath : `${sitePath}${namespace}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 function apiBookings(payload) {

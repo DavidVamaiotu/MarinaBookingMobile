@@ -4,9 +4,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { MarinaApiClient, normalizeBaseUrl, normalizeBooking } = require("../src/main/api-client");
 
-test("production API URLs require HTTPS and the exact REST namespace", () => {
+test("API URLs accept a site origin or full endpoint and normalize the namespace", () => {
   assert.throws(() => normalizeBaseUrl("http://example.com/wp-json/marina-booking/v1"), /HTTPS/);
-  assert.throws(() => normalizeBaseUrl("https://example.com/wp-json/other/v1"), /must end/);
+  assert.equal(normalizeBaseUrl(" https://www.marinapark.ro/ "), "https://www.marinapark.ro/wp-json/marina-booking/v1");
+  assert.equal(normalizeBaseUrl("https://www.marinapark.ro/wp-json/marina-booking/v1/"), "https://www.marinapark.ro/wp-json/marina-booking/v1");
+  assert.equal(normalizeBaseUrl("https://example.com/wordpress"), "https://example.com/wordpress/wp-json/marina-booking/v1");
+  assert.equal(normalizeBaseUrl("https://example.com/wordpress/?ignored=true#ignored"), "https://example.com/wordpress/wp-json/marina-booking/v1");
   assert.equal(normalizeBaseUrl("http://localhost:8080/wp-json/marina-booking/v1/"), "http://localhost:8080/wp-json/marina-booking/v1");
 });
 
