@@ -10,6 +10,7 @@ const { BookingService } = require("./src/main/booking-service");
 const validate = require("./src/main/validation");
 
 app.setName("Marina Booking Desktop");
+if (process.platform === "linux") app.commandLine.appendSwitch("password-store", "gnome-libsecret");
 
 let window = null;
 let database = null;
@@ -43,13 +44,21 @@ function registerIpc() {
   ipcMain.handle("settings:save", (_event, input) => {
     const settings = validate.settings(input);
     settings.apiBaseUrl = normalizeBaseUrl(settings.apiBaseUrl);
-    database.saveSettings(settings);
+    if (!settings.password && !service.vault.hasPassword()) throw new Error("Application Password is required the first time settings are saved.");
     if (settings.password) service.vault.setPassword(settings.password);
+    database.saveSettings(settings);
     service.queue.resumeAfterCredentials();
     service.emitState();
     return service.settings();
   });
-  ipcMain.handle("settings:test", async () => ({ ok: true, resources: (await service.api.resources()).length }));
+  ipcMain.handle("settings:test", async (_event, input) => {
+    const settings = validate.settings(input);
+    settings.apiBaseUrl = normalizeBaseUrl(settings.apiBaseUrl);
+    const password = settings.password || service.vault.getPassword();
+    if (!password) throw new Error("Application Password is required before testing the connection.");
+    const testClient = new MarinaApiClient({ getConfig: async () => ({ ...settings, password }) });
+    return { ok: true, resources: (await testClient.resources()).length };
+  });
   ipcMain.handle("settings:clear", () => {
     service.vault.clear();
     database.saveSettings({ apiBaseUrl: "", username: "" });

@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   revertBooking: (id) => invoke("queue:revert", id),
   getSettings: () => invoke("settings:get"),
   saveSettings: (input) => invoke("settings:save", input),
-  testConnection: () => invoke("settings:test"),
+  testConnection: (input) => invoke("settings:test", input),
   clearCredentials: () => invoke("settings:clear"),
   onStateChanged: (callback) => {
     const listener = (_event, state) => callback(state);

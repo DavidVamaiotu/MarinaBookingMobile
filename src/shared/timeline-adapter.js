@@ -10,7 +10,8 @@
   }
 
   function toItem(booking) {
-    const name = field(booking, "name") || field(booking, "firstname") || field(booking, "email") || `Booking ${booking.serverId || "local"}`;
+    const fullName = [field(booking, "name") || field(booking, "firstname"), field(booking, "secondname") || field(booking, "lastname")].filter(Boolean).join(" ");
+    const name = fullName || field(booking, "email") || `Booking ${booking.serverId || "local"}`;
     return {
       key: booking.localId,
       serverId: booking.serverId,

@@ -15,3 +15,8 @@ test("timeline adapter maps resources to lanes and bookings to bars", () => {
   assert.equal(lanes[0].items[0].title, "John");
   assert.equal(lanes[0].items[0].syncState, "queued");
 });
+
+test("timeline adapter combines WordPress first and second name fields", () => {
+  const item = toItem({ localId: "server:11", serverId: 11, resourceId: 4, dates: ["2026-07-20"], startDate: "2026-07-20", endDate: "2026-07-20", formData: { name: { value: "Ana" }, secondname: { value: "Popescu" } }, status: "pending", syncState: "synced" });
+  assert.equal(item.title, "Ana Popescu");
+});

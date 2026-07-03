@@ -30,6 +30,7 @@ function normalizeBaseUrl(value, { allowHttpLocalhost = true } = {}) {
 function apiBookings(payload) {
   if (Array.isArray(payload?.bookings)) return payload.bookings;
   if (Array.isArray(payload?.result?.bookings)) return payload.result.bookings;
+  if (payload?.result?.bookings && typeof payload.result.bookings === "object") return Object.values(payload.result.bookings);
   if (Array.isArray(payload?.result)) return payload.result;
   if (Array.isArray(payload?.result?.rows)) return payload.result.rows;
   return [];
@@ -52,14 +53,18 @@ function normalizeBooking(raw) {
       if (name) normalizedForm[name] = { value: String(formValue(field.value)), type: field.type || "text" };
     }
   } else {
-    for (const [name, field] of Object.entries(formData || {})) normalizedForm[name] = { value: String(formValue(field)), type: field?.type || (name === "email" ? "email" : "text") };
+    for (const [name, field] of Object.entries(formData || {})) {
+      if (["_all_", "_all_fields_"].includes(name) || (field && typeof field === "object" && !("value" in field))) continue;
+      normalizedForm[name] = { value: String(formValue(field)), type: field?.type || (name === "email" ? "email" : "text") };
+    }
   }
+  const datesApproved = rawDates.length > 0 && rawDates.every((entry) => Number(entry?.approved) === 1);
   return {
     serverId,
     resourceId: Number(raw.resource_id ?? raw.booking_type ?? raw.type_id),
     dates,
-    status: raw.status === "approved" || raw.approved === true || Number(raw.approved) === 1 ? "approved" : "pending",
-    trashed: raw.trashed === true || raw.trash === true || Number(raw.trash) === 1,
+    status: raw.status === "approved" || raw.approved === true || Number(raw.approved) === 1 || datesApproved ? "approved" : "pending",
+    trashed: raw.trashed === true || raw.trash === true || Number(raw.trash) === 1 || raw.is_trash === true || Number(raw.is_trash) === 1,
     note: String(raw.note ?? raw.remark ?? ""),
     formData: normalizedForm,
     serverUpdatedAt: raw.updated_at ?? raw.modification_date ?? null,

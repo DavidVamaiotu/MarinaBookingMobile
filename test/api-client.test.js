@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { MarinaApiClient, normalizeBaseUrl, normalizeBooking } = require("../src/main/api-client");
+const { MarinaApiClient, apiBookings, normalizeBaseUrl, normalizeBooking } = require("../src/main/api-client");
 
 test("API URLs accept a site origin or full endpoint and normalize the namespace", () => {
   assert.throws(() => normalizeBaseUrl("http://example.com/wp-json/marina-booking/v1"), /HTTPS/);
@@ -35,4 +35,28 @@ test("API booking responses normalize form fields and dates", () => {
   assert.deepEqual(booking.dates, ["2026-07-20"]);
   assert.equal(booking.formData.name.value, "Jane");
   assert.equal(booking.note, "Note");
+});
+
+test("v1.0.2 object-keyed booking lists map to bookings with date approval", () => {
+  const rows = apiBookings({ result: { bookings: { 6637: {
+    booking_id: "6637",
+    booking_type: "27",
+    status: "",
+    trash: "0",
+    dates: [
+      { booking_date: "2026-07-03 15:00:01", approved: "1" },
+      { booking_date: "2026-07-04 00:00:00", approved: "1" }
+    ],
+    form_data: { name: "Ana", secondname: "Popescu", email: "ana@example.com", _all_: {}, _all_fields_: {} },
+    remark: "Late arrival"
+  } } } });
+  assert.equal(rows.length, 1);
+  const booking = normalizeBooking(rows[0]);
+  assert.equal(booking.serverId, 6637);
+  assert.equal(booking.resourceId, 27);
+  assert.deepEqual(booking.dates, ["2026-07-03", "2026-07-04"]);
+  assert.equal(booking.status, "approved");
+  assert.equal(booking.trashed, false);
+  assert.equal(booking.formData.secondname.value, "Popescu");
+  assert.equal("_all_" in booking.formData, false);
 });

@@ -476,8 +476,12 @@ $("#settingsForm").addEventListener("submit", async (event) => {
 
 $("#testConnection").addEventListener("click", async () => {
   const output = $("#settingsStatus");
+  const form = $("#settingsForm");
   output.textContent = "Testing…";
-  try { const result = await window.marina.testConnection(); output.textContent = `Connected. ${result.resources} resources returned.`; }
+  try {
+    const result = await window.marina.testConnection({ apiBaseUrl: form.elements.apiBaseUrl.value, username: form.elements.username.value, password: form.elements.password.value || undefined, timezone: form.elements.timezone.value });
+    output.textContent = `Connected. ${result.resources} resources returned.`;
+  }
   catch (error) { output.textContent = error.message || String(error); }
 });
 
