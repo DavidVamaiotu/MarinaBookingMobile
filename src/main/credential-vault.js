@@ -7,9 +7,9 @@ class CredentialVault {
   }
 
   assertSecureBackend() {
-    if (!this.safeStorage?.isEncryptionAvailable()) throw new Error("OS credential encryption is unavailable.");
+    if (!this.safeStorage?.isEncryptionAvailable()) throw new Error("Criptarea datelor de acces nu este disponibilă în sistem.");
     const backend = this.safeStorage.getSelectedStorageBackend?.();
-    if (backend === "basic_text") throw new Error("A secure OS keychain is required; Electron reported the insecure basic_text backend.");
+    if (backend === "basic_text") throw new Error("Este necesar un portofel securizat al sistemului; Electron a raportat backend-ul nesigur basic_text.");
   }
 
   setPassword(password) {

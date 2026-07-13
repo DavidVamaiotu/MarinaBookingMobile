@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mobile popup preview</title>
+  <link rel="stylesheet" href="../../styles.css">
+</head>
+<body>
+  <div style="--timeline-name-size:11px"><strong class="timeline-bar-guest" id="baseName">Client Test</strong></div>
+  <div style="--timeline-name-size:16px"><strong class="timeline-bar-guest" id="zoomName">Client Test Zoom</strong></div>
+  <aside class="booking-menu" id="bookingMenu">
+    <header><strong>ID: 123</strong><button class="booking-menu-close" type="button">×</button></header>
+    <div class="booking-menu-actions"><button type="button">Editează</button><button type="button">Aprobă</button><button type="button">Gunoi</button></div>
+    <div id="bookingMenuContent">
+      <div class="booking-menu-badges"><span class="booking-id-badge">123</span><span class="booking-status-badge approved">Aprobată</span><span class="booking-resource-badge">Camera 12</span></div>
+      <div class="booking-menu-facts">
+        <span><strong>Prenume:</strong>Client</span><span><strong>Nume:</strong>Exemplu</span>
+        <span class="wide"><strong>Email:</strong>client@example.test</span><span><strong>Telefon:</strong>0700000000</span>
+        <span><strong>Adulți:</strong>2</span><span><strong>Copii:</strong>1</span>
+        <span class="wide"><strong>Detalii:</strong><span id="customerDetails"></span></span>
+      </div>
+      <div class="booking-menu-note"><strong>Notă:</strong>Conținut local sintetic fără date de producție.</div>
+      <div class="booking-menu-dates"><span>10 iulie 2026 <small>15:00</small></span><b>→</b><span>14 iulie 2026 <small>12:00</small></span></div>
+    </div>
+  </aside>
+  <script src="../../src/shared/booking-fields.js"></script>
+  <script>
+    const syntheticBooking = { formData: { cerere_client7: { value: "Cameră liniștită", type: "textarea" } } };
+    customerDetails.textContent = BookingFields.detailsValue(syntheticBooking) || "—";
+  </script>
+</body>
+</html>

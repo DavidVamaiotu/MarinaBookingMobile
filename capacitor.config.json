@@ -1,0 +1,14 @@
+{
+  "appId": "ro.marinapark.booking.mobile",
+  "appName": "Marina Booking",
+  "webDir": "dist-mobile-web",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#f4f1e9"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

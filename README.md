@@ -1,10 +1,10 @@
 # Marina Booking Desktop
 
-A focused Electron desktop client for WordPress Booking Calendar reservations through **Marina Booking API v1.0.2+**. It preserves the existing Parkline timeline interaction model while replacing the legacy local property-management server with a secure API-only main process.
+Client desktop Electron pentru rezervările WordPress Booking Calendar prin **Marina Booking API v1.0.5+**. Păstrează designul și interacțiunile timeline-ului Parkline Web, înlocuind serverul local vechi cu un proces principal securizat, bazat exclusiv pe API.
 
-## Development
+## Dezvoltare
 
-Requirements: Node.js 22.5+ and an OS credential service available to Electron (Windows Credential Protection, macOS Keychain, or a Linux Secret Service implementation).
+Cerințe: Node.js 22.5+ și un serviciu de credențiale disponibil pentru Electron (Windows Credential Protection, macOS Keychain sau Linux Secret Service).
 
 ```bash
 npm install
@@ -13,16 +13,20 @@ npm run check
 npm start
 ```
 
-On first launch, open Settings and enter:
+Aplicația are două spații de lucru independente: **Camere** pentru `marinapark.ro` și **Camping** pentru corturi/rulote pe `camping.marinapark.ro`. Fiecare păstrează separat cache-ul, coada și datele de acces, astfel încât ID-urile WordPress identice să nu se suprascrie.
 
-- API URL ending in `/wp-json/marina-booking/v1`
-- the dedicated WordPress API username
-- its Application Password
-- the site timezone, normally `Europe/Bucharest`
+La prima pornire a fiecărui spațiu, deschide Setări și introdu:
 
-The password is encrypted with Electron `safeStorage` and kept in the application’s local SQLite database only as encrypted bytes. The app rejects Electron’s insecure Linux `basic_text` fallback. It is never returned through IPC.
+- URL-ul API care se termină în `/wp-json/marina-booking/v1`
+- utilizatorul API WordPress dedicat
+- parola de aplicație
+- fusul orar al site-ului, de regulă `Europe/Bucharest`
 
-## Production build
+Camping afișează exact două rânduri, Corturi și Rulote, dar păstrează toate ID-urile de resurse returnate de API. La creare se selectează numai categoria părinte; Booking Calendar verifică întreaga capacitate și atribuie rezervarea primei resurse părinte/copil disponibile pentru tot intervalul, în ordinea priorității configurate în WordPress. ID-ul real atribuit de server rămâne pe rezervare pentru editare și sincronizare. Patul suplimentar nu este oferit în Camping. Site-ul Camping trebuie să aibă instalat Marina Booking API v1.0.4+; aplicația nu încearcă acces direct la baza WordPress.
+
+Parolele sunt criptate separat cu Electron `safeStorage` și păstrate în bazele SQLite locale doar ca date criptate. Aplicația respinge fallback-ul Linux nesigur `basic_text`. Parolele nu sunt returnate niciodată prin IPC.
+
+## Build pentru producție
 
 ```bash
 npm ci
@@ -31,12 +35,34 @@ npm run check
 npm run dist
 ```
 
-The Windows NSIS installer is written to `dist-electron/`. Runtime state is stored under Electron’s per-user `userData` directory, not beside the installed application.
+Instalatorul Windows NSIS este scris în `dist-electron/`. Starea aplicației este păstrată în directorul `userData` al utilizatorului, nu lângă aplicația instalată.
 
-## Scope
+## Domeniu
 
-Included: visible-range timeline, create/edit, drag/resize, approved/pending status, notes, trash/restore, availability validation, optimistic local updates, restart-safe queue, diagnostics, secure settings, and API-backed refresh.
+Include timeline pe nouă luni și cache SQLite pentru Camere și Camping, actualizare periodică condiționată, creare/editare, redimensionare de la margine, status aprobat/în așteptare, note, gunoi/restaurare, verificarea disponibilității, previzualizări native de preț și avans, schimbarea avansului cu actualizarea automată a restului și cereri de plată prin email, actualizări optimiste locale, cozi sigure la repornire, diagnostic, setări securizate și actualizare prin API. Crearea unei rezervări necesită disponibilitate online și confirmarea prețului; rezervările din cache rămân disponibile offline.
 
-Excluded: WordPress plugin administration, form builders, payment configuration, email-template configuration, permanent deletion, direct WordPress database access, and all legacy Marina Park bar/receipt/statistics/local-server features.
+Nu include administrarea pluginului WordPress, constructori de formulare, configurarea plăților, configurarea șabloanelor de email, ștergere definitivă, acces direct la baza WordPress sau funcțiile vechi Marina Park pentru bonuri, statistici și server local.
 
-See [Architecture](docs/ARCHITECTURE.md), [API compatibility](docs/API-COMPATIBILITY.md), and [manual test checklist](docs/MANUAL-TEST-CHECKLIST.md).
+Vezi [arhitectura](docs/ARCHITECTURE.md), [compatibilitatea API](docs/API-COMPATIBILITY.md) și [lista de teste manuale](docs/MANUAL-TEST-CHECKLIST.md).
+## Instalare pe Android și Windows
+
+### Android (inclusiv Samsung Galaxy Z Fold 7)
+
+Aplicația Android este independentă de PC și folosește direct același Marina Booking API. Pe telefon păstrează un cache local pentru consultare fără internet, dar creează și modifică rezervări numai când există conexiune. Parola API este criptată cu Android Keystore.
+
+1. Generează APK-ul cu `npm run mobile:apk`.
+2. Copiază `android/app/build/outputs/apk/debug/app-debug.apk` pe telefon.
+3. Pe telefon, deschide APK-ul și permite **Instalare aplicații necunoscute** pentru aplicația din care l-ai deschis (de exemplu My Files).
+4. Apasă **Instalare**, apoi deschide **Marina Booking**.
+5. În **Setări**, introdu URL-ul API, utilizatorul WordPress și parola de aplicație. Configurează separat filele **Camere** și **Camping**.
+
+Pe Galaxy Z Fold 7 aplicația se adaptează automat atât ecranului exterior, cât și ecranului interior. Poate fi pliată/desfăcută în timp ce rulează; calendarul rămâne derulabil orizontal.
+
+### Windows
+
+1. Generează installerul cu `npm run dist` pe Windows sau într-un mediu care poate construi NSIS.
+2. Rulează `dist-electron/MarinaBookingDesktop-Setup-1.0.0.exe`.
+3. Installerul este per utilizator și nu cere drepturi de administrator. După instalare, aplicația pornește automat.
+4. Deschide **Setări** și configurează conexiunile **Camere** și **Camping**.
+
+Datele locale Windows rămân în profilul utilizatorului la dezinstalare, pentru a proteja coada offline. Aplicația Android și cea Windows folosesc același server, dar au stocări locale separate.

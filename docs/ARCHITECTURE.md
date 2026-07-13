@@ -1,41 +1,47 @@
-# Architecture
+# Arhitectură
 
-## Existing timeline retained
+## Timeline-ul existent este păstrat
 
-The source application used a custom CSS grid timeline rather than a calendar dependency:
+Aplicația sursă folosea un timeline cu grid CSS personalizat, nu o bibliotecă de calendar:
 
-- `unit` objects were resource rows.
-- `stay` objects were booking bars.
-- `timelineLaneItems()` assigned overlapping stays to deterministic sub-lanes.
-- rows were virtualized above 60 resources with overscan.
-- bar bodies moved stays; invisible edge handles resized arrival/departure.
-- the view used a buffered multi-month horizontal window and sticky resource labels.
+- obiectele `unit` reprezentau rândurile spațiilor;
+- obiectele `stay` reprezentau barele rezervărilor;
+- `timelineLaneItems()` atribuia suprapunerile unor sub-linii deterministe;
+- rândurile erau virtualizate peste 60 de spații, cu overscan;
+- corpul barei deschide detaliile, iar mânerele invizibile de la margini redimensionează sosirea/plecarea;
+- vizualizarea folosea o fereastră orizontală tamponată de mai multe luni și etichete fixe pentru spații.
 
-The desktop app keeps those mechanics and CSS concepts in `app.js` and `styles.css`. `src/shared/timeline-adapter.js` is now the boundary that maps normalized API resources/bookings to timeline lanes/items. No replacement calendar implementation was introduced.
+Desktopul păstrează aceste mecanisme și stilul plannerului Parkline Web în `app.js` și `styles.css`. Folosește fereastra tamponată de nouă luni, scala săptămânală/zilnică, lățime dinamică pentru zile, etichete fixe, linii compacte, gestionarea rezervărilor adiacente și recentrarea la margini. `src/shared/timeline-adapter.js` este limita dintre API și liniile/elementele timeline-ului.
 
-## Process boundaries
+## Limitele proceselor
 
 ```text
-Renderer timeline and panels
+Timeline și panouri în renderer
         |
-        | narrow validated IPC intents
+        | intenții IPC validate
         v
-Electron main process
-  BookingService -> SQLite normalized state
-                 -> durable CommandQueue
-                 -> MarinaApiClient -> HTTPS Marina Booking API v1.0.2+
+Procesul principal Electron
+  Camere:  BookingService -> marina-booking.sqlite -> marinapark.ro
+  Camping: BookingService -> marina-booking-camping.sqlite -> camping.marinapark.ro
+           fiecare cu CommandQueue, credențiale și MarinaApiClient proprii
 ```
 
-The renderer has no Node access and performs no HTTP. `contextIsolation`, sandboxing, disabled Node integration, restrictive CSP, denied permissions, HTTPS validation, and default certificate validation remain enabled.
+Rendererul nu are acces la Node și nu face HTTP. Izolarea contextului, sandbox-ul, Node dezactivat, CSP restrictiv, permisiunile refuzate, validarea HTTPS și validarea implicită a certificatelor rămân active.
 
-## Local data and queue
+## Date locale și coadă
 
-SQLite stores normalized `resources`, `bookings`, `booking_dates`, `booking_form_data`, `booking_notes`, `optimistic_overlays`, `commands`, and `sync_errors`. WAL mode keeps short UI transactions responsive.
+SQLite stochează `resources`, `bookings`, `booking_dates`, `booking_form_data`, `booking_notes`, `optimistic_overlays`, `commands` și `sync_errors` normalizate. Modul WAL păstrează tranzacțiile UI scurte.
 
-Every mutation first commits its optimistic booking state and command in one local transaction. The main-process queue then sends in the background. Commands remain ordered for both booking and resource; different resources can use up to three concurrent slots. Unsent edits and notes coalesce, creates never do.
+Camere și Camping folosesc baze locale separate. Această limită este obligatorie deoarece cele două site-uri WordPress pot avea aceleași ID-uri de resurse, rezervări și comenzi. Camping păstrează toate resursele și rezervările returnate de API, cu check-in la 14:00, apoi le grupează vizual în exact două rânduri fixe: Corturi și Rulote. ID-ul API original rămâne pe rezervare pentru editare și sincronizare. Camere păstrează fluxul existent și check-in-ul la 15:00. La creare, Camping trimite ID-ul resursei părinte Corturi sau Rulote, iar Booking Calendar alege prima resursă părinte/copil liberă pentru întregul interval, conform priorității din WordPress. Clientul nu aplică înainte verificarea binară `/availability`, deoarece aceasta este destinată resurselor individuale și nu modelează sigur capacitatea părinte; endpoint-ul de creare WordPress rămâne autoritatea finală pentru alocare și acceptare.
 
-States are `queued`, `sending`, `synced`, `failed`, `conflict`, and `needs_attention`. Interrupted `sending` commands return to `queued` at startup. Temporary failures and HTTP 5xx/429 use bounded exponential backoff with jitter. Authentication failures pause the queue.
+Citirea inițială acoperă fereastra timeline-ului de nouă luni. `loaded_ranges` reține momentul în care un interval complet a fost verificat. Pornirea și temporizatorul local de cinci minute reutilizează imediat SQLite și fac GET doar când intervalul lipsește sau este mai vechi de 15 minute; butonul Actualizează forțează verificarea. Deplasarea în fereastra tamponată nu interoghează API-ul. O reîmprospătare completă reconciliază local rezervările lipsă, păstrând modificările optimiste și conflictele.
 
-Create command UUID equals both `external_id` and `Idempotency-Key`. After an unknown timeout, the queue reconciles by the exact external-ID endpoint before retrying the same key. It never creates a new key for that operation.
+Fiecare modificare salvează starea optimistă și comanda într-o singură tranzacție locală. Coada procesului principal trimite în fundal. Comenzile rămân ordonate pentru rezervare și spațiu; spații diferite pot folosi până la trei sloturi concurente. Editările și notele nesincronizate se combină, dar creările nu.
 
-Remote refreshes do not replace optimistic overlays. A changed or missing server booking while local writes are pending becomes an explicit conflict.
+Dialogul de creare nu calculează bani local. Schimbările de date, spațiu, număr de persoane sau pat suplimentar declanșează un calcul `fast` temporizat la 300 ms; cererea anterioară este anulată, iar răspunsurile întârziate sunt ignorate. Cache-ul LRU din memorie păstrează calculele `fast` 30 de secunde și `full` 15 secunde. Revizuirea detaliată folosește `full`, iar creare/editare/redimensionare cer un calcul `full` proaspăt înainte de salvare.
+
+Stările sunt `queued`, `sending`, `synced`, `failed`, `conflict` și `needs_attention`. Comenzile `sending` întrerupte revin în `queued` la pornire. Erorile temporare și HTTP 5xx/429 folosesc backoff exponențial cu jitter. Erorile de autentificare opresc coada. Comenzile rețin endpoint-ul API normalizat; schimbarea endpoint-ului izolează comenzile din coadă până când fiecare este verificată și reîncercată explicit către noua țintă.
+
+UUID-ul comenzii de creare este atât `external_id`, cât și `Idempotency-Key`. După un timeout necunoscut, coada reconciliază prin endpoint-ul exact pentru external ID înainte de a reîncerca aceeași cheie. Nu creează o cheie nouă pentru aceeași operație.
+
+Actualizările remote nu înlocuiesc overlay-urile optimiste. O rezervare de pe server modificată sau lipsă în timpul scrierilor locale devine un conflict explicit.

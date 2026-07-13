@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ro">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -10,84 +10,189 @@
 <body>
   <main class="app-shell">
     <header class="toolbar">
-      <div class="brand"><img src="assets/marina-park-logo.png" alt=""><div><strong>Marina Booking</strong><span>WordPress reservations</span></div></div>
+      <div class="brand"><img src="assets/marina-park-logo.png" alt=""><div><strong>Marina Booking</strong><span>Rezervări WordPress</span></div></div>
+      <nav class="workspace-tabs" aria-label="Tip cazare">
+        <button class="workspace-tab is-active" data-workspace="rooms" type="button" aria-selected="true">Camere</button>
+        <button class="workspace-tab" data-workspace="camping" type="button" aria-selected="false">Camping</button>
+      </nav>
       <div class="toolbar-actions">
-        <button class="sync-indicator" id="syncIndicator" type="button" aria-label="Open sync diagnostics"><span class="status-dot"></span><span id="syncText">Offline</span><small id="syncCounts">0 queued</small></button>
-        <button class="secondary" id="openSettings" type="button">Settings</button>
-        <button class="primary" id="openCreate" type="button">New booking</button>
+        <button class="sync-indicator" id="syncIndicator" type="button" aria-label="Deschide diagnosticul sincronizării"><span class="status-dot"></span><span id="syncText">Deconectat</span><small id="syncCounts">0 în așteptare</small></button>
+        <button class="secondary" id="openSettings" type="button">Setări</button>
+        <button class="primary" id="openCreate" type="button">Rezervare nouă</button>
       </div>
     </header>
 
     <section class="timeline-panel" aria-labelledby="timelineTitle">
       <div class="timeline-header">
-        <div><p>Reservation workspace</p><h1 id="timelineTitle">Timeline</h1></div>
+        <div><p id="timelineSubtitle">Camere și bungalow-uri</p><h1 id="timelineTitle">Calendar camere</h1></div>
         <div class="month-controls">
-          <button id="prevMonth" type="button" aria-label="Previous month">‹</button>
+          <button id="prevMonth" type="button" aria-label="Luna precedentă">‹</button>
           <strong id="monthLabel"></strong>
-          <button id="nextMonth" type="button" aria-label="Next month">›</button>
-          <button class="secondary compact" id="today" type="button">Today</button>
-          <button class="secondary compact" id="refresh" type="button">Refresh</button>
+          <button id="nextMonth" type="button" aria-label="Luna următoare">›</button>
+          <button class="secondary compact" id="today" type="button">Astăzi</button>
+          <button class="secondary compact" id="refresh" type="button">Actualizează</button>
+          <button class="secondary compact" id="toggleTrashed" type="button" aria-pressed="false">Afișează gunoiul</button>
         </div>
       </div>
       <div class="banner" id="banner" hidden></div>
-      <div class="timeline-shell" id="timelineShell" tabindex="0" aria-label="Booking timeline">
+      <div class="timeline-shell" id="timelineShell" tabindex="0" aria-label="Calendarul rezervărilor">
         <div class="timeline-scale" id="timelineScale"></div>
         <div class="guest-timeline" id="guestTimeline"></div>
       </div>
     </section>
   </main>
 
+  <aside class="booking-menu" id="bookingMenu" aria-labelledby="bookingMenuTitle" hidden>
+    <header>
+      <strong id="bookingMenuTitle">ID: —</strong>
+      <button class="booking-menu-close" data-close="bookingMenu" type="button" aria-label="Închide meniul rezervării">×</button>
+    </header>
+    <div class="booking-menu-actions" aria-label="Acțiuni rezervare">
+      <button id="bookingMenuEdit" type="button" title="Editează rezervarea"><span aria-hidden="true">✎</span>Editează</button>
+      <button id="bookingMenuStatus" type="button" title="Schimbă statusul aprobării"><span aria-hidden="true">✓</span><span class="action-label">Aprobă</span></button>
+      <button id="bookingMenuTrash" type="button" title="Mută rezervarea la gunoi"><span aria-hidden="true">⌫</span><span class="action-label">Gunoi</span></button>
+      <div class="booking-payment-menu">
+        <button class="booking-payment-menu-toggle" id="bookingPaymentMenuToggle" type="button" aria-label="Mai multe acțiuni de plată" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">⋯</span>Plată</button>
+        <div class="booking-payment-dropdown" id="bookingPaymentMenu" role="menu" hidden>
+          <button id="bookingMenuChangeDeposit" type="button" role="menuitem">Schimbă avansul</button>
+          <button id="bookingMenuSendPayment" type="button" role="menuitem">Trimite emailul de plată</button>
+        </div>
+      </div>
+    </div>
+    <div id="bookingMenuContent"></div>
+  </aside>
+
   <aside class="side-panel" id="detailsPanel" aria-labelledby="detailsTitle" hidden>
-    <header><div><p>Booking details</p><h2 id="detailsTitle">Reservation</h2></div><button class="icon" data-close="detailsPanel" type="button">×</button></header>
+    <header><div><p>Detalii rezervare</p><h2 id="detailsTitle">Rezervare</h2></div><button class="icon" data-close="detailsPanel" type="button" aria-label="Închide detaliile">×</button></header>
     <form id="detailsForm" class="panel-form">
-      <div class="sync-card" id="bookingSyncState"></div>
-      <div class="field-grid"><label>Name<input name="name" required></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
-      <section id="extraFieldsSection" hidden><h3>Additional form fields</h3><div class="field-grid" id="extraFields"></div></section>
-      <label>Resource<select name="resourceId" required></select></label>
-      <div class="field-grid"><label>Arrival<input name="start" type="date" required></label><label>Departure / last date<input name="end" type="date" required></label></div>
-      <label>Internal note<textarea name="note" rows="4"></textarea></label>
-      <label class="check"><input name="sendEmail" type="checkbox"> Send WordPress email for status/trash action</label>
-      <dl class="facts" id="bookingFacts"></dl>
-      <div class="button-row"><button class="primary" type="submit">Save changes</button><button class="secondary" id="toggleStatus" type="button"></button></div>
-      <button class="danger" id="toggleTrash" type="button"></button>
-      <section><h3>Local command history</h3><div class="command-list compact-list" id="bookingCommands"></div></section>
+      <section class="details-section">
+        <header><h3>Client</h3></header>
+        <div class="field-grid">
+          <label>Prenume<input name="name" autocomplete="given-name" required></label>
+          <label>Nume de familie<input name="secondname" autocomplete="family-name"></label>
+          <label class="span-2">Email<input name="email" type="email" autocomplete="email"></label>
+          <label class="span-2">Telefon<input name="phone" type="tel" autocomplete="tel"></label>
+        </div>
+        <div class="field-grid" id="clientExtraFields"></div>
+      </section>
+
+      <section class="details-section">
+        <header><h3>Rezervare</h3></header>
+        <label>Unitate de cazare<select name="resourceId" required></select></label>
+        <div class="field-grid">
+          <label>Data sosirii <small>Check-in la 15:00</small><input name="start" type="date" required></label>
+          <label>Data plecării <small>Check-out la 12:00</small><input name="end" type="date" required></label>
+          <label>Număr adulți<input name="visitors" type="number" inputmode="numeric" min="1" required></label>
+          <label>Număr copii<input name="children" type="number" inputmode="numeric" min="0" required></label>
+        </div>
+        <div class="field-grid" id="reservationExtraFields"></div>
+      </section>
+
+      <section class="details-section">
+        <header><h3>Notă internă</h3></header>
+        <label class="sr-only" for="detailsNote">Notă internă</label>
+        <textarea id="detailsNote" name="note" rows="4" placeholder="Adaugă o observație pentru echipă…"></textarea>
+      </section>
+
+      <section class="details-section details-actions-section">
+        <header><h3>Salvare</h3></header>
+        <label class="check email-option"><input name="sendEmail" type="checkbox"><span>Trimite notificări pentru acțiuni</span></label>
+        <button class="primary details-save" type="submit">Salvează rezervarea</button>
+      </section>
     </form>
   </aside>
 
+  <dialog id="paymentDialog" aria-labelledby="paymentDialogTitle">
+    <form id="paymentForm" class="panel-form" method="dialog">
+      <header><div><p>Plată rezervare</p><h2 id="paymentDialogTitle">Avans</h2></div><button class="icon" id="closePaymentDialog" type="button" aria-label="Închide">×</button></header>
+      <section class="payment-section" id="paymentSection">
+        <header><h3>Plată avans</h3><p>Suma salvată este cea folosită de linkul de plată WordPress.</p></header>
+        <div class="payment-facts" id="paymentFacts"></div>
+        <div class="field-grid payment-controls">
+          <label>Avans nou<input name="depositAmount" type="number" inputmode="decimal" min="0.01" step="0.01"></label>
+          <button class="secondary" id="saveDeposit" type="button">Salvează avansul</button>
+        </div>
+        <label>Motiv / mesaj opțional<textarea name="paymentReason" rows="2" maxlength="1000" placeholder="Va fi disponibil în șablon prin [paymentreason]"></textarea></label>
+        <button class="primary" id="sendPaymentRequest" type="button">Trimite emailul de plată</button>
+        <p class="payment-status" id="paymentStatus"></p>
+      </section>
+    </form>
+  </dialog>
+
   <dialog id="createDialog">
-    <form id="createForm" class="panel-form" method="dialog">
-      <header><div><p>Create booking</p><h2>New reservation</h2></div><button class="icon" value="cancel">×</button></header>
-      <div class="field-grid"><label>Name<input name="name" required></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
-      <label>Resource<select name="resourceId" required></select></label>
-      <div class="field-grid"><label>Arrival<input name="start" type="date" required></label><label>Departure / last date<input name="end" type="date" required></label></div>
-      <div class="availability" id="createAvailability">Availability will be checked in the background.</div>
-      <label>Internal note<textarea name="note" rows="3"></textarea></label>
-      <label class="check"><input name="approved" type="checkbox" checked> Approved</label>
-      <label class="check"><input name="sendEmail" type="checkbox"> Send WordPress email</label>
-      <footer><button class="secondary" value="cancel">Cancel</button><button class="primary" id="createSubmit" type="submit">Queue booking</button></footer>
+    <form id="createForm" class="create-booking-form" method="dialog">
+      <header><div><p>Adăugare client</p><h2>Rezervare nouă</h2></div><button class="icon" id="closeCreateDialog" type="button" aria-label="Închide">×</button></header>
+
+      <label class="create-resource">Selectați spațiul de cazare:
+        <select name="resourceId" required></select>
+      </label>
+
+      <section class="booking-calendar" aria-label="Calendar disponibilitate">
+        <div class="booking-calendar-months" id="createCalendar"></div>
+      </section>
+
+      <div class="booking-legend" aria-label="Legendă calendar">
+        <span><i class="legend-day available">03</i>Disponibil</span>
+        <span><i class="legend-day booked">03</i>Rezervat</span>
+        <span><i class="legend-day pending">03</i>În așteptare</span>
+        <span><i class="legend-day partial">03</i>Rezervat parțial</span>
+      </div>
+
+      <div class="booking-summary" aria-live="polite">
+        <p id="createDateSummary">Date: <span>…</span> – <span>…</span> nopți</p>
+        <p>Total: <strong id="createTotalCost">—</strong> / Avans: <strong id="createDepositCost">—</strong> / Rest: <strong id="createBalanceCost">—</strong></p>
+        <p class="quote-state-row"><span class="quote-state" id="createQuoteState" data-state="stale">neactualizat</span><button class="quote-details-toggle" id="createQuoteDetails" type="button" disabled>Detalii preț</button></p>
+        <div class="quote-breakdown" id="createQuoteBreakdown" hidden></div>
+        <div class="booking-calendar-message" id="createPricing">Selectați datele pentru calcularea prețului.</div>
+        <div class="booking-calendar-message" id="createAvailability">Selectați data sosirii și data plecării.</div>
+      </div>
+
+      <div class="create-client-fields">
+        <label>Prenume (necesar):<input name="name" autocomplete="given-name" required></label>
+        <label>Nume (necesar):<input name="secondname" autocomplete="family-name" required></label>
+        <label>Email (necesar):<input name="email" type="email" autocomplete="email" required></label>
+        <label>Telefon (necesar):<input name="phone" type="tel" autocomplete="tel" required></label>
+        <label id="createVehiclePlate" hidden>Număr de înmatriculare:<input name="vehiclePlate" autocomplete="off"></label>
+        <div class="guest-counts">
+          <label>Adulți:<select name="adults"></select></label>
+          <label>Copii:<select name="children"></select></label>
+        </div>
+        <label class="extra-bed" id="createExtraBed">Pat suplimentar (+50 Lei):<input name="extraBed" type="checkbox"></label>
+        <label class="extra-bed" id="createElectricity" hidden>Energie electrică (+20 Lei/noapte):<input name="electricity" type="checkbox"></label>
+        <label class="check email-option create-email-option"><input name="sendEmail" type="checkbox"><span>Trimite notificarea pentru rezervarea nouă prin email.</span></label>
+      </div>
+
+      <input name="start" type="hidden">
+      <input name="end" type="hidden">
+      <input name="note" type="hidden">
+      <input name="approved" type="checkbox" hidden>
+      <footer><button class="secondary" id="cancelCreateDialog" type="button">Anulează</button><button class="primary" id="createSubmit" type="submit" disabled>Adaugă rezervarea</button></footer>
     </form>
   </dialog>
 
   <dialog id="settingsDialog">
     <form id="settingsForm" class="panel-form" method="dialog" autocomplete="off">
-      <header><div><p>Connection</p><h2>Settings</h2></div><button class="icon" value="cancel">×</button></header>
-      <label>API base URL<input name="apiBaseUrl" type="url" placeholder="https://example.com/wp-json/marina-booking/v1" required></label>
-      <label>API username<input name="username" autocomplete="off" required></label>
-      <label>Application Password<input name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep saved credential"></label>
-      <label>Site timezone<input name="timezone" value="Europe/Bucharest" required></label>
+      <header><div><p id="settingsSourceLabel">Conexiune camere</p><h2 id="settingsTitle">Setări Camere</h2></div><button class="icon" id="closeSettingsDialog" type="button" aria-label="Închide setările">×</button></header>
+      <label>URL de bază API<input name="apiBaseUrl" type="url" placeholder="https://example.com/wp-json/marina-booking/v1" required></label>
+      <label>Utilizator API<input name="username" autocomplete="off" required></label>
+      <label>Parolă de aplicație<input name="password" type="password" autocomplete="new-password" placeholder="Lasă gol pentru a păstra parola salvată"></label>
+      <label>Fus orar al site-ului<input name="timezone" value="Europe/Bucharest" required></label>
       <div class="settings-status" id="settingsStatus"></div>
-      <footer><button class="danger subtle" id="clearCredentials" type="button">Clear local credentials</button><span></span><button class="secondary" id="testConnection" type="button">Test connection</button><button class="primary" type="submit">Save</button></footer>
+      <footer><button class="danger subtle" id="clearCredentials" type="button">Șterge datele locale</button><span></span><button class="secondary" id="testConnection" type="button">Testează conexiunea</button><button class="primary" type="submit">Salvează</button></footer>
     </form>
   </dialog>
 
   <aside class="diagnostics" id="diagnostics" hidden>
-    <header><div><p>Durable local queue</p><h2>Sync diagnostics</h2></div><button class="icon" data-close="diagnostics" type="button">×</button></header>
+    <header><div><p>Coada locală persistentă</p><h2>Diagnostic sincronizare</h2></div><button class="icon" data-close="diagnostics" type="button" aria-label="Închide diagnosticul">×</button></header>
     <div class="diagnostic-summary" id="diagnosticSummary"></div>
     <div class="command-list" id="commandList"></div>
   </aside>
 
   <div class="toast" id="toast" hidden></div>
+  <script src="src/shared/booking-fields.js"></script>
+  <script src="src/shared/pricing-note.js"></script>
   <script src="src/shared/timeline-adapter.js"></script>
+  <script src="src/shared/booking-calendar.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

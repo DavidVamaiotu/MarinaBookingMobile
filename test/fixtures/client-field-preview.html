@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Client field preview</title>
+  <link rel="stylesheet" href="../../styles.css">
+</head>
+<body>
+  <aside class="side-panel" id="detailsPanel" aria-labelledby="detailsTitle">
+    <header><div><p>Detalii rezervare</p><h2 id="detailsTitle">Client sintetic</h2></div></header>
+    <form class="panel-form" id="detailsForm">
+      <section class="details-section">
+        <header><h3>Rezervare</h3></header>
+        <label>Unitate de cazare<select><option>Camera 4</option></select></label>
+        <div class="field-grid">
+          <label>Data sosirii <small>Check-in la 15:00</small><input type="date" value="2026-07-18"></label>
+          <label>Data plecării <small>Check-out la 12:00</small><input type="date" value="2026-07-21"></label>
+          <label>Număr adulți<input type="number" value="2"></label>
+          <label>Număr copii<input type="number" value="0"></label>
+        </div>
+      </section>
+      <section class="details-section">
+        <header><h3>Client</h3></header>
+        <div class="field-grid">
+          <label>Prenume<input id="firstName"></label>
+          <label>Nume de familie<input id="lastName"></label>
+          <label class="span-2">Email<input id="email" type="email"></label>
+          <label class="span-2">Telefon<input id="phone" type="tel"></label>
+        </div>
+      </section>
+      <section class="details-section"><header><h3>Notă internă</h3></header><textarea rows="4" placeholder="Adaugă o observație pentru echipă…"></textarea></section>
+      <section class="details-section payment-section"><header><h3>Plată avans</h3></header><div class="payment-facts"><span><strong>Cost</strong>1.200 lei</span><span><strong>Avans</strong>400 lei</span><span><strong>Rest</strong>800 lei</span></div></section>
+      <section class="details-section details-actions-section"><header><h3>Salvare</h3></header><button class="primary details-save" type="button">Salvează rezervarea</button><label class="check email-option"><input type="checkbox"><span>Trimite notificare clientului la salvare.</span></label></section>
+    </form>
+  </aside>
+  <script src="../../src/shared/booking-fields.js"></script>
+  <script>
+    const booking = { formData: {
+      prenume4: { value: "Ana" }, lastname_4: { value: "Popescu" },
+      email4: { value: "ana@example.test" }, telefon_4: { value: "+40 712 345 678" }
+    } };
+    firstName.value = BookingFields.value(booking, "firstName");
+    lastName.value = BookingFields.value(booking, "lastName");
+    email.value = BookingFields.value(booking, "email");
+    phone.value = BookingFields.value(booking, "phone");
+  </script>
+</body>
+</html>
