@@ -21,7 +21,17 @@ test("deposit mutation checks the expected note and writes cost plus remark toge
   assert.match(source, /WHERE booking_id = %d AND remark = %s/);
   assert.match(source, /0 === \$updated/);
   assert.match(source, /START TRANSACTION/);
-  assert.match(source, /Rest: ' \. self::format_note_amount\( \$balance \)/);
+  assert.match(source, /Cost total: ' \. self::format_note_amount\( \$total \) \. ' RON, Depozit: ' \. self::format_note_amount\( \$deposit \) \. ' RON, Rest: ' \. self::format_note_amount\( \$balance \) \. ' RON'/);
+  assert.match(source, /pricing_note_pattern\(\)/);
+  assert.match(source, /\$deposit < 0 \|\| \$total <= 0/);
+  assert.match(source, /SET cost = %f, remark = %s/);
+  assert.match(source, /abs\( \(float\) \$latest\['cost'\] - \$deposit \) < 0\.005/);
+});
+
+test("payment snapshot exposes the authoritative WordPress note and database deposit", () => {
+  assert.match(source, /'note'\s*=> isset\( \$booking\['remark'\] \) \? \(string\) \$booking\['remark'\] : ''/);
+  assert.match(source, /'deposit'\s*=> \$deposit/);
+  assert.match(source, /'total'\s*=> is_wp_error\( \$pricing \) \? null : \$pricing\['total'\]/);
 });
 
 test("payment request delegates to Booking Calendar and increments only after success", () => {
@@ -34,8 +44,27 @@ test("payment request delegates to Booking Calendar and increments only after su
   assert.match(source, /'counter_updated' => 1 === \$updated/);
 });
 
+test("payment request validates the EuPlatesc contract and stores Booking Calendar hint fields", () => {
+  assert.match(source, /\$payload\['start_date'\]/);
+  assert.match(source, /\$payload\['end_date'\]/);
+  assert.match(source, /\$payload\['nights'\]/);
+  assert.match(source, /\/\^\[A-Za-z\]\{6\}\$\/D/);
+  assert.match(source, /self::booking_dates\( \$booking_id \)/);
+  assert.match(source, /selected_short_dates_hint/);
+  assert.match(source, /nights_number_hint/);
+  assert.match(source, /wpbc_get_dates_short_format\( implode\( ',', \$payment\['dates'\] \) \)/);
+  assert.match(source, /SET form = %s WHERE booking_id = %d AND form = %s/);
+  assert.match(source, /marina_booking_api_payment_form_failed/);
+  assert.match(source, /could not generate or send the EuPlatesc payment request email/);
+});
+
 test("known server failures release their idempotency reservation for same-key retry", () => {
   assert.match(source, /release_idempotency_reservation\( \$id \)/);
   assert.match(source, /'state' => 'processing'/);
   assert.match(source, /catch \( Throwable \$exception \)[\s\S]*mark_idempotency_unknown/);
+});
+
+test("price previews use the read-only rate-limit bucket with the full REST route", () => {
+  assert.match(source, /'\/' \. self::NAMESPACE \. '\/prices\/calculate' === untrailingslashit\( \(string\) \$request->get_route\(\) \)/);
+  assert.match(source, /\( \$is_write && ! \$is_price_preview \) \? 60 : 300/);
 });

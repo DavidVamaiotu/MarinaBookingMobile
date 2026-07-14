@@ -5,6 +5,7 @@ const { randomUUID } = require("node:crypto");
 const { toStayDateTimes } = require("../shared/booking-calendar");
 const { normalizeFormData } = require("../shared/form-data");
 const PricingNote = require("../shared/pricing-note");
+const PaymentRequest = require("../shared/payment-request");
 
 const ACTIVE_COMMAND_STATES = ["queued", "sending", "failed", "conflict", "needs_attention"];
 
@@ -124,6 +125,7 @@ class BookingDatabase {
         result_json TEXT,
         error_code TEXT,
         error_message TEXT,
+        dismissed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT
@@ -157,6 +159,7 @@ class BookingDatabase {
     const commandColumns = this.db.prepare("PRAGMA table_info(commands)").all().map((column) => column.name);
     if (!commandColumns.includes("api_base_url")) this.db.exec("ALTER TABLE commands ADD COLUMN api_base_url TEXT");
     if (!commandColumns.includes("depends_on_command_id")) this.db.exec("ALTER TABLE commands ADD COLUMN depends_on_command_id TEXT");
+    if (!commandColumns.includes("dismissed_at")) this.db.exec("ALTER TABLE commands ADD COLUMN dismissed_at TEXT");
     const resourceColumns = this.db.prepare("PRAGMA table_info(resources)").all().map((column) => column.name);
     if (!resourceColumns.includes("active")) this.db.exec("ALTER TABLE resources ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
     this.recoverStoredFormFields();
@@ -411,14 +414,13 @@ class BookingDatabase {
       else if (type === "trash") payload = { trash: booking.trashed, send_email: Boolean(patch.sendEmail) };
       else {
         const apiDates = this.bookingDateTimes(booking.dates);
-        const introducedDates = new Set(booking.dates.filter((date) => !current.dates.includes(date)));
         payload = {
           resource_id: booking.resourceId,
           dates: apiDates,
           form_data: booking.formData,
           booking_form_type: patch.bookingFormType || "",
           send_email: Boolean(patch.sendEmail),
-          availability_dates: current.resourceId === booking.resourceId ? apiDates.filter((date) => introducedDates.has(date.slice(0, 10))) : apiDates
+          availability_dates: apiDates
         };
       }
       const commandId = this.enqueue(type, localId, booking.resourceId, payload);
@@ -426,42 +428,49 @@ class BookingDatabase {
     });
   }
 
-  queueDepositUpdate(localId, deposit) {
+  queueDepositUpdate(localId, payment) {
     return this.transaction(() => {
       const current = this.bookingRow(localId);
       if (!current) throw new Error("Rezervarea nu a fost găsită.");
       if (!current.serverId) throw new Error("Rezervarea trebuie sincronizată înainte de schimbarea avansului.");
       const pending = this.db.prepare("SELECT id FROM commands WHERE booking_local_id=? AND type IN ('deposit_update','payment_request') AND status IN ('queued','sending','failed','conflict','needs_attention') LIMIT 1").get(localId);
       if (pending) throw new Error("Există deja o operație de plată nesincronizată pentru această rezervare.");
-      const pricing = PricingNote.parse(current.note);
+      const input = payment && typeof payment === "object" ? payment : { deposit: payment };
+      const authoritativeNote = String(input.note ?? current.note ?? "");
+      const pricing = PricingNote.parse(authoritativeNote);
       if (!pricing) throw new Error("Nota rezervării nu conține un Cost valid.");
-      const updated = PricingNote.update(current.note, deposit, pricing.total);
+      const authoritativeTotal = Number(input.total ?? pricing.total);
+      if (!Number.isFinite(authoritativeTotal) || Math.abs(authoritativeTotal - pricing.total) > 0.005) throw new Error("Costul verificat nu corespunde notei WordPress.");
+      const updated = PricingNote.update(authoritativeNote, Number(input.deposit), authoritativeTotal);
       const booking = this.writeBooking({ ...current, note: updated.note, syncState: "queued" }, { preserveOverlay: true });
       this.setOverlay(localId, current, booking);
       const commandId = this.enqueue("deposit_update", localId, null, {
         deposit: updated.deposit,
         total: updated.total,
-        expected_note: current.note
+        expected_note: authoritativeNote
       }, { noCoalesce: true });
       return { booking, commandId, pricing: updated };
     });
   }
 
-  queuePaymentRequest(localId, reason = "") {
+  queuePaymentRequest(localId, paymentRequest) {
     return this.transaction(() => {
+      paymentRequest = PaymentRequest.validate(paymentRequest);
       const booking = this.bookingRow(localId);
       if (!booking?.serverId) throw new Error("Rezervarea trebuie sincronizată înainte de trimiterea emailului.");
       const existing = this.db.prepare("SELECT id FROM commands WHERE booking_local_id=? AND type='payment_request' AND status IN ('queued','sending','failed','conflict','needs_attention') LIMIT 1").get(localId);
       if (existing) throw new Error("Există deja un email de plată nesincronizat pentru această rezervare.");
+      const blockedDeposit = this.db.prepare("SELECT id FROM commands WHERE booking_local_id=? AND type='deposit_update' AND status IN ('failed','conflict','needs_attention') LIMIT 1").get(localId);
+      if (blockedDeposit) throw new Error("Actualizarea avansului are o problemă. Reîncearcă sau anulează modificarea înainte de trimiterea emailului.");
       const dependency = this.db.prepare("SELECT id FROM commands WHERE booking_local_id=? AND type='deposit_update' AND status IN ('queued','sending') ORDER BY created_at DESC LIMIT 1").get(localId);
-      const commandId = this.enqueue("payment_request", localId, null, { reason: String(reason || "") }, { noCoalesce: true, dependsOnCommandId: dependency?.id });
+      const commandId = this.enqueue("payment_request", localId, null, paymentRequest, { noCoalesce: true, dependsOnCommandId: dependency?.id });
       this.refreshBookingSyncState(localId);
       return { booking: this.bookingRow(localId), commandId, dependsOnCommandId: dependency?.id || null };
     });
   }
 
   commandRows(limit = 500) {
-    return this.db.prepare("SELECT * FROM commands ORDER BY created_at DESC LIMIT ?").all(limit).map((row) => ({
+    return this.db.prepare("SELECT * FROM commands WHERE dismissed_at IS NULL ORDER BY created_at DESC LIMIT ?").all(limit).map((row) => ({
       id: row.id, type: row.type, bookingLocalId: row.booking_local_id, resourceId: row.resource_id, payload: json(row.payload_json, {}), status: row.status, attempts: row.attempts, availableAt: row.available_at, dependsOnCommandId: row.depends_on_command_id, result: json(row.result_json), errorCode: row.error_code, errorMessage: row.error_message, createdAt: row.created_at, updatedAt: row.updated_at
     }));
   }
@@ -513,13 +522,33 @@ class BookingDatabase {
 
   retryCommand(id) {
     const timestamp = now();
-    this.db.prepare("UPDATE commands SET status='queued',api_base_url=COALESCE((SELECT value FROM settings WHERE key='apiBaseUrl'),api_base_url),available_at=?,error_code=NULL,error_message=NULL,updated_at=? WHERE id=? AND status IN ('failed','conflict','needs_attention')").run(timestamp, timestamp, id);
+    this.db.prepare("UPDATE commands SET status='queued',api_base_url=COALESCE((SELECT value FROM settings WHERE key='apiBaseUrl'),api_base_url),available_at=?,error_code=NULL,error_message=NULL,dismissed_at=NULL,updated_at=? WHERE id=? AND status IN ('failed','conflict','needs_attention')").run(timestamp, timestamp, id);
+  }
+
+  dismissFailedCommands() {
+    return this.transaction(() => {
+      const failures = this.db.prepare("SELECT id,booking_local_id FROM commands WHERE status='failed' AND dismissed_at IS NULL ORDER BY created_at,id").all();
+      if (!failures.length) return 0;
+      const bookingIds = [...new Set(failures.map((row) => row.booking_local_id).filter(Boolean))];
+      const affectedCommandIds = new Set(failures.map((row) => row.id));
+      for (const localId of bookingIds) {
+        const active = this.db.prepare(`SELECT id FROM commands WHERE booking_local_id=? AND status IN (${ACTIVE_COMMAND_STATES.map(() => "?").join(",")})`).all(localId, ...ACTIVE_COMMAND_STATES);
+        for (const command of active) affectedCommandIds.add(command.id);
+        this.revertBookingState(localId);
+      }
+      const timestamp = now();
+      for (const commandId of affectedCommandIds) {
+        this.db.prepare("UPDATE commands SET status='cancelled',error_code='discarded_failed_operation',error_message='Operația eșuată și modificările locale dependente au fost anulate',dismissed_at=?,updated_at=?,completed_at=COALESCE(completed_at,?) WHERE id=?").run(timestamp, timestamp, timestamp, commandId);
+        this.db.prepare("UPDATE sync_errors SET resolved_at=? WHERE resolved_at IS NULL AND command_id=?").run(timestamp, commandId);
+      }
+      return failures.length;
+    });
   }
 
   retryAuthenticationCommands() {
     const timestamp = now();
     return this.db.prepare(`UPDATE commands
-      SET status='queued',available_at=?,error_code=NULL,error_message=NULL,updated_at=?
+      SET status='queued',available_at=?,error_code=NULL,error_message=NULL,dismissed_at=NULL,updated_at=?
       WHERE status='failed' AND error_code IN ('authentication_failed','http_401','http_403')`).run(timestamp, timestamp).changes;
   }
 
@@ -540,25 +569,30 @@ class BookingDatabase {
     else this.db.prepare("UPDATE bookings SET sync_state='conflict',updated_at=? WHERE local_id=?").run(now(), localId);
   }
 
+  revertBookingState(localId) {
+    const timestamp = now();
+    this.db.prepare("UPDATE commands SET status='cancelled',error_code='reverted',error_message='Modificarea a fost anulată de utilizator',updated_at=?,completed_at=? WHERE booking_local_id=? AND status IN ('queued','failed','conflict','needs_attention')").run(timestamp, timestamp, localId);
+    const overlay = this.db.prepare("SELECT base_json FROM optimistic_overlays WHERE booking_local_id=?").get(localId);
+    if (!overlay) {
+      this.refreshBookingSyncState(localId);
+      return this.bookingRow(localId);
+    }
+    const base = json(overlay.base_json);
+    if (!base) {
+      this.db.prepare("DELETE FROM bookings WHERE local_id=?").run(localId);
+      return null;
+    }
+    const booking = this.writeBooking({ ...base, syncState: "synced" });
+    this.db.prepare("DELETE FROM optimistic_overlays WHERE booking_local_id=?").run(localId);
+    return booking;
+  }
+
   revertBooking(localId) {
-    return this.transaction(() => {
-      const overlay = this.db.prepare("SELECT base_json FROM optimistic_overlays WHERE booking_local_id=?").get(localId);
-      if (!overlay) return this.bookingRow(localId);
-      const timestamp = now();
-      this.db.prepare("UPDATE commands SET status='cancelled',error_code='reverted',error_message='Modificarea a fost anulată de utilizator',updated_at=?,completed_at=? WHERE booking_local_id=? AND status IN ('queued','failed','conflict','needs_attention')").run(timestamp, timestamp, localId);
-      const base = json(overlay.base_json);
-      if (!base) {
-        this.db.prepare("DELETE FROM bookings WHERE local_id=?").run(localId);
-        return null;
-      }
-      const booking = this.writeBooking({ ...base, syncState: "synced" });
-      this.db.prepare("DELETE FROM optimistic_overlays WHERE booking_local_id=?").run(localId);
-      return booking;
-    });
+    return this.transaction(() => this.revertBookingState(localId));
   }
 
   diagnostics() {
-    const counts = Object.fromEntries(this.db.prepare("SELECT status,COUNT(*) count FROM commands GROUP BY status").all().map((row) => [row.status, row.count]));
+    const counts = Object.fromEntries(this.db.prepare("SELECT status,COUNT(*) count FROM commands WHERE dismissed_at IS NULL GROUP BY status").all().map((row) => [row.status, row.count]));
     const meta = Object.fromEntries(this.db.prepare("SELECT key,value FROM sync_meta").all().map((row) => [row.key, row.value]));
     const cache = this.db.prepare("SELECT start_date AS startDate,end_date AS endDate,loaded_at AS loadedAt FROM loaded_ranges WHERE resource_id=0 ORDER BY loaded_at DESC LIMIT 1").get() || null;
     return { queued: (counts.queued || 0) + (counts.sending || 0), failed: (counts.failed || 0) + (counts.conflict || 0) + (counts.needs_attention || 0), counts, lastSuccessfulSync: meta.lastSuccessfulSync || null, authPaused: meta.authPaused === "true", cache };

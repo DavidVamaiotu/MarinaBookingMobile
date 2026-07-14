@@ -192,3 +192,25 @@ test("reverting local work cancels its commands without blocking the resource", 
   assert.equal(db.diagnostics().failed, 0);
   db.close();
 });
+
+test("discarding failed work reverts its booking and cancels dependent commands", () => {
+  const db = new BookingDatabase(":memory:");
+  const failed = db.optimisticCreate(input("Failed"));
+  const dependent = db.optimisticUpdate(failed.booking.localId, { note: "Must not be sent" }, "note");
+  const conflict = db.optimisticCreate(input("Conflict"));
+  db.markCommand(failed.commandId, "failed", { code: "request_failed", message: "Failed log" });
+  db.markCommand(conflict.commandId, "conflict", { code: "conflict", message: "Conflict log" });
+  assert.equal(db.diagnostics().failed, 2);
+  assert.equal(db.dismissFailedCommands(), 1);
+  assert.deepEqual(db.commandRows().map((command) => command.id), [conflict.commandId]);
+  assert.equal(db.diagnostics().failed, 1);
+  assert.equal(db.bookingRow(failed.booking.localId), null);
+  assert.equal(db.getCommand(failed.commandId).status, "cancelled");
+  assert.equal(db.getCommand(dependent.commandId).status, "cancelled");
+  assert.ok(db.db.prepare("SELECT dismissed_at FROM commands WHERE id=?").get(failed.commandId).dismissed_at);
+  assert.ok(db.db.prepare("SELECT dismissed_at FROM commands WHERE id=?").get(dependent.commandId).dismissed_at);
+  db.revertBooking(conflict.booking.localId);
+  const next = db.optimisticCreate(input("Next"));
+  assert.deepEqual(db.readyCommands().map((command) => command.id), [next.commandId]);
+  db.close();
+});

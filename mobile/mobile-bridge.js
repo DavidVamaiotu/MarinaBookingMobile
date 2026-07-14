@@ -1,10 +1,13 @@
-import { CapacitorHttp } from "@capacitor/core";
+import { Capacitor, CapacitorHttp, registerPlugin } from "@capacitor/core";
 import { App } from "@capacitor/app";
 import { Preferences } from "@capacitor/preferences";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { canonicalValue, createOperationSignature, normalizeMobilePriceQuote, retryDelayMs, scopeMobileData, serverIdFromPayload } from "../src/shared/mobile-api.js";
 import { normalizeFormData } from "../src/shared/form-data.js";
 import * as PricingNote from "../src/shared/pricing-note.js";
+import * as PaymentRequest from "../src/shared/payment-request.js";
+
+const AutoUpdater = registerPlugin("AutoUpdater");
 
 if (!window.marina) {
   const SOURCES = new Set(["rooms", "camping"]);
@@ -36,6 +39,13 @@ if (!window.marina) {
   let currentRange = null;
   let requestGeneration = 0;
   let refreshTimer = null;
+  let updateCheckStarted = false;
+
+  function checkForMobileUpdateOnce() {
+    if (updateCheckStarted || !Capacitor.isNativePlatform()) return;
+    updateCheckStarted = true;
+    void AutoUpdater.checkAndInstall().catch((error) => console.error("Mobile update check failed:", error));
+  }
 
   function connectionFor(source = currentSource) {
     return sourceConnections.get(source) || { online: false, authPaused: false, lastSuccessfulAt: 0 };
@@ -511,11 +521,13 @@ if (!window.marina) {
     finally { if (mutationChains.get(key) === operation) mutationChains.delete(key); }
   }
 
-  async function requireAvailability(source, expectedApiBaseUrl, resourceId, dates) {
+  async function requireAvailability(source, expectedApiBaseUrl, resourceId, dates, excludeBookingId = null) {
     if (source === "camping" || !dates.length) return;
+    const body = { resource_id: Number(resourceId), dates };
+    if (excludeBookingId !== null) body.exclude_booking_id = Number(excludeBookingId);
     const { payload } = await request("/availability", {
       method: "POST",
-      body: { resource_id: Number(resourceId), dates },
+      body,
       expectedApiBaseUrl,
       readOnly: true
     }, null, source);
@@ -596,7 +608,15 @@ if (!window.marina) {
       }
       while (true) {
         const actions = ((await allActionHistory())[source] || []).slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-        const action = actions.find((candidate) => ["deposit_update", "payment_request"].includes(candidate.type) && candidate.status === "queued" && (!candidate.dependsOnCommandId || actions.find((item) => item.id === candidate.dependsOnCommandId)?.status === "synced"));
+        const action = actions.find((candidate) => {
+          if (!["deposit_update", "payment_request"].includes(candidate.type) || candidate.status !== "queued") return false;
+          if (candidate.dependsOnCommandId && actions.find((item) => item.id === candidate.dependsOnCommandId)?.status !== "synced") return false;
+          if (candidate.type === "payment_request" && actions.some((item) => item.type === "deposit_update"
+            && item.bookingLocalId === candidate.bookingLocalId
+            && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status)
+            && String(item.createdAt) <= String(candidate.createdAt))) return false;
+          return true;
+        });
         if (!action) return;
         const temporaryFailure = await serializeMutation(`booking:${source}:${action.bookingLocalId}`, async () => {
           await updateAction(source, action.id, { status: "sending", attempts: Number(action.attempts || 0) + 1, updatedAt: new Date().toISOString() });
@@ -604,7 +624,7 @@ if (!window.marina) {
             const bookingId = serverId(action.bookingLocalId);
             const depositAction = action.type === "deposit_update";
             const path = depositAction ? `/bookings/${bookingId}/deposit` : `/bookings/${bookingId}/payment-request`;
-            const body = depositAction ? { deposit: action.payload.deposit, total: action.payload.total, expected_note: action.payload.expected_note } : { reason: action.payload.reason || "" };
+            const body = depositAction ? { deposit: action.payload.deposit, total: action.payload.total, expected_note: action.payload.expected_note } : PaymentRequest.validate(action.payload);
             const { payload: response } = await request(path, { method: depositAction ? "PATCH" : "POST", body, idempotencyKey: action.id, expectedApiBaseUrl: normalizeBaseUrl(settings.apiBaseUrl) }, null, source);
             if (depositAction) await updateCachedBooking(source, bookingId, { note: response.note || action.payload.new_note });
             const completedAt = new Date().toISOString();
@@ -690,6 +710,7 @@ if (!window.marina) {
       requestGeneration += 1;
     },
     async bootstrap(range) {
+      checkForMobileUpdateOnce();
       currentRange = range;
       const connection = connectionFor();
       return configuredState(connection.online, connection.authPaused);
@@ -759,12 +780,7 @@ if (!window.marina) {
         const expectedApiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
         const stayTimes = source === "camping" ? { checkIn: "14:00:01", checkOut: "12:00:02" } : {};
         const apiDates = window.BookingCalendar.toStayDateTimes(patch.dates, stayTimes);
-        const current = await cachedBooking(source, bookingId);
-        const introducedDates = new Set(patch.dates.filter((date) => !(current?.dates || []).includes(String(date).slice(0, 10))));
-        const availabilityDates = current && Number(current.resourceId) === Number(patch.resourceId)
-          ? apiDates.filter((date) => introducedDates.has(date.slice(0, 10)))
-          : apiDates;
-        await requireAvailability(source, expectedApiBaseUrl, patch.resourceId, availabilityDates);
+        await requireAvailability(source, expectedApiBaseUrl, patch.resourceId, apiDates, bookingId);
         const { payload } = await request(`/bookings/${bookingId}`, {
           method: "PATCH",
           idempotencyKey: crypto.randomUUID(),
@@ -796,20 +812,26 @@ if (!window.marina) {
       if (!booking) throw new Error("Rezervarea nu există în cache.");
       const actions = (await allActionHistory())[source] || [];
       if (actions.some((item) => item.bookingLocalId === id && ["deposit_update", "payment_request"].includes(item.type) && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status))) throw new Error("Există deja o operație de plată nesincronizată pentru această rezervare.");
-      const pricing = PricingNote.parse(booking.note);
+      const authoritativeNote = String(input.note ?? booking.note ?? "");
+      const pricing = PricingNote.parse(authoritativeNote);
       if (!pricing) throw new Error("Nota rezervării nu conține un Cost valid.");
-      const updated = PricingNote.update(booking.note, Number(input.deposit), pricing.total);
+      const authoritativeTotal = Number(input.total ?? pricing.total);
+      if (!Number.isFinite(authoritativeTotal) || Math.abs(authoritativeTotal - pricing.total) > 0.005) throw new Error("Costul verificat nu corespunde notei WordPress.");
+      const updated = PricingNote.update(authoritativeNote, Number(input.deposit), authoritativeTotal);
       await updateCachedBooking(source, booking.serverId, { note: updated.note, syncState: "queued" });
-      return enqueuePaymentAction(source, booking, "deposit_update", { deposit: updated.deposit, total: updated.total, expected_note: booking.note, new_note: updated.note });
+      return enqueuePaymentAction(source, booking, "deposit_update", { deposit: updated.deposit, total: updated.total, expected_note: authoritativeNote, new_note: updated.note });
     },
     async requestPayment(id, input = {}) {
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
+      const paymentRequest = PaymentRequest.validate(input);
       const booking = await cachedBooking(source, serverId(id));
       if (!booking) throw new Error("Rezervarea nu există în cache.");
       const actions = (await allActionHistory())[source] || [];
       if (actions.some((item) => item.bookingLocalId === id && item.type === "payment_request" && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status))) throw new Error("Există deja un email de plată nesincronizat.");
-      const dependency = actions.find((item) => item.bookingLocalId === id && item.type === "deposit_update" && ["queued", "sending"].includes(item.status));
-      return enqueuePaymentAction(source, booking, "payment_request", { reason: String(input.reason || "") }, dependency?.id || null);
+      const unresolvedDeposit = actions.find((item) => item.bookingLocalId === id && item.type === "deposit_update" && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status));
+      if (unresolvedDeposit && ["failed", "conflict", "needs_attention"].includes(unresolvedDeposit.status)) throw new Error("Actualizarea avansului are o problemă. Reîncearcă sau anulează modificarea înainte de trimiterea emailului.");
+      const dependency = unresolvedDeposit;
+      return enqueuePaymentAction(source, booking, "payment_request", paymentRequest, dependency?.id || null);
     },
     checkAvailability(input) {
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
@@ -835,6 +857,28 @@ if (!window.marina) {
       if (!action || !["deposit_update", "payment_request"].includes(action.type)) throw new Error("Această acțiune nu poate fi reîncercată pe telefon.");
       await updateAction(currentSource, id, { status: "queued", errorCode: null, errorMessage: null, updatedAt: new Date().toISOString() });
       void processPaymentQueue(currentSource);
+    },
+    async clearFailedCommands() {
+      const source = currentSource;
+      const snapshot = (await allActionHistory())[source] || [];
+      const failures = snapshot.filter((item) => item.status === "failed");
+      if (!failures.length) return 0;
+      const failedPaymentBookings = [...new Set(failures.filter((item) => ["deposit_update", "payment_request"].includes(item.type)).map((item) => item.bookingLocalId).filter(Boolean))];
+      const removedIds = new Set(failures.map((item) => item.id));
+      for (const bookingLocalId of failedPaymentBookings) {
+        await serializeMutation(`booking:${source}:${bookingLocalId}`, async () => {
+          const actions = (await allActionHistory())[source] || [];
+          const relevant = actions.filter((item) => item.bookingLocalId === bookingLocalId
+            && ["deposit_update", "payment_request"].includes(item.type)
+            && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status));
+          for (const action of relevant) removedIds.add(action.id);
+          const originalNote = relevant.filter((item) => item.type === "deposit_update").sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0]?.payload?.expected_note;
+          if (originalNote !== undefined) await updateCachedBooking(source, serverId(bookingLocalId), { note: originalNote, syncState: "synced" });
+        });
+      }
+      await updateActionHistory(source, (items) => items.filter((item) => !removedIds.has(item.id)));
+      await emitCurrentState(source);
+      return failures.length;
     },
     async revertBooking(id) {
       const actions = (await allActionHistory())[currentSource] || [];

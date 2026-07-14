@@ -235,8 +235,10 @@ class MarinaApiClient {
 
   booking(id, { expectedApiBaseUrl } = {}) { return this.request(`/bookings/${id}`, { expectedApiBaseUrl }).then(({ payload }) => normalizeBooking(payload.booking || payload)); }
   bookingByExternalId(externalId, { expectedApiBaseUrl } = {}) { return this.request(`/bookings/by-external-id/${encodeURIComponent(externalId)}`, { expectedApiBaseUrl }).then(({ payload }) => normalizeBooking(payload.booking || payload)); }
-  availability(resourceId, dates, { expectedApiBaseUrl } = {}) {
-    return this.request("/availability", { method: "POST", body: { resource_id: resourceId, dates }, expectedApiBaseUrl }).then(({ payload }) => {
+  availability(resourceId, dates, { expectedApiBaseUrl, excludeBookingId } = {}) {
+    const body = { resource_id: resourceId, dates };
+    if (excludeBookingId !== undefined && excludeBookingId !== null) body.exclude_booking_id = Number(excludeBookingId);
+    return this.request("/availability", { method: "POST", body, expectedApiBaseUrl }).then(({ payload }) => {
       if (typeof payload?.available !== "boolean") {
         throw new ApiError("Endpoint-ul disponibilității a returnat un răspuns incomplet.", { code: "invalid_availability_response", permanent: true, payload });
       }

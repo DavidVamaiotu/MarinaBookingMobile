@@ -93,6 +93,31 @@ Base path:
 | PATCH | `/bookings/{id}/deposit` | Atomically update payment amount and pricing note | **Yes** |
 | POST | `/bookings/{id}/payment-request` | Send native Payment Request email | **Yes** |
 
+`PATCH /bookings/{id}/deposit` accepts `deposit: 0`. It writes `cost = 0` to the native Booking Calendar database row and saves the matching canonical note (`Depozit: 0 RON`, with the full total remaining). Negative deposits are rejected.
+
+For an edit preflight, `/availability` accepts the existing WordPress booking ID as `exclude_booking_id`. The full proposed stay must still be sent in `dates`; Booking Calendar excludes only that booking through its native `skip_booking_id` lookup and continues to detect every other overlap:
+
+```json
+{
+  "resource_id": 4,
+  "dates": ["2026-07-17 15:00:01", "2026-07-18 00:00:00", "2026-07-19 00:00:00", "2026-07-20 00:00:00", "2026-07-21 12:00:02"],
+  "exclude_booking_id": 44
+}
+```
+
+The payment-request body is strict. Dates use ISO `YYYY-MM-DD`; `nights` must match the saved Booking Calendar period; and `reason` is the six-letter `[paymentreason]` code used by the EuPlatesc link:
+
+```json
+{
+  "reason": "aBcDeF",
+  "nights": 2,
+  "start_date": "2026-07-20",
+  "end_date": "2026-07-22"
+}
+```
+
+Before sending, the endpoint verifies the period against `wp_bookingdates` and writes Booking Calendar's `selected_short_dates_hint{resource_id}` and `nights_number_hint{resource_id}` form fields used by the EuPlatesc payment page.
+
 ## Price calculation examples
 
 ### Fast reception quote

@@ -63,10 +63,14 @@ test("vertical pinch locks direction and transforms only the camera content", ()
   assert.doesNotMatch(stylesSource, /:root\{[^}]*transform:/);
   assert.match(stylesSource, /\.app-shell\{position:relative\}/);
   assert.match(stylesSource, /\.timeline-camera-viewport\{[^}]*overflow:hidden/);
-  assert.match(stylesSource, /\.timeline-camera-content\{[^}]*transform:translate3d\(0,0,0\) scale\(1\)[^}]*transform-origin:0 0[^}]*will-change:transform[^}]*contain:paint/);
+  assert.match(stylesSource, /\.timeline-camera-content\{[^}]*transform:none[^}]*transform-origin:0 0[^}]*will-change:auto[^}]*contain:paint/);
   assert.doesNotMatch(stylesSource, /\.app-shell\{[^}]*transform:/);
-  const cameraSource = appSource.slice(appSource.indexOf("function setCameraState"), appSource.indexOf("function queueCameraState"));
-  assert.match(cameraSource, /cameraContent\.style\.transform = `translate3d\(\$\{cameraOffsetX\}px, \$\{cameraOffsetY\}px, 0\) scale\(\$\{cameraScale\}\)`/);
+  const cameraSource = appSource.slice(appSource.indexOf("function snapToDevicePixel"), appSource.indexOf("function queueCameraState"));
+  assert.match(cameraSource, /cameraContent\.style\.willChange = cameraInteractionActive \? "transform" : "auto"/);
+  assert.match(cameraSource, /cameraContent\.style\.transform = "none"/);
+  assert.match(cameraSource, /const translate = cameraInteractionActive \? "translate3d" : "translate"/);
+  assert.match(cameraSource, /Math\.round\(value \* pixelRatio\) \/ pixelRatio/);
+  assert.match(cameraSource, /Math\.round\(cameraScale \* 1000\) \/ 1000/);
   assert.doesNotMatch(cameraSource, /window\.scroll|dayWidth|font|margin|padding/);
   assert.doesNotMatch(appSource, /window\.scrollTo|displayMagnification|--display-magnification/);
 });

@@ -77,7 +77,10 @@ test("camping timeline keeps one category row for corturi and one for rulote", (
   assert.match(appSource, /function campingParentResources\(\)/);
   assert.match(appSource, /tent \? \{ \.\.\.tent, title: "Corturi" \}/);
   assert.match(appSource, /caravan \? \{ \.\.\.caravan, title: "Rulote" \}/);
-  assert.match(appSource, /timelineResourceId: isCaravanResource\(booking\.resourceId, booking\.formData\) \? caravan\.id : tent\.id/);
+  assert.match(appSource, /timelineResourceId: isCaravanResource\(booking\.resourceId\) \? caravan\.id : tent\.id/);
+  assert.match(appSource, /if \(currentId === caravanParentId\) return true/);
+  assert.match(appSource, /if \(currentId === tentParentId\) return false/);
+  assert.doesNotMatch(appSource, /if \(plate \|\| \["1", "true", "yes", "on"\]\.includes\(electricity\)\) return true/);
   assert.match(appSource, /TimelineAdapter\.mapState\(timelineResources\(\), timelineBookings\(\)/);
   assert.match(appSource, /const layout = assignLanes\(visibleItems\)/);
   assert.doesNotMatch(appSource, /assignSingleLane/);

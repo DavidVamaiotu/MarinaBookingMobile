@@ -1,0 +1,54 @@
+name: Release mobile
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'DavidVamaiotu/MarinaBookingMobile'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - run: node scripts/verify-release-version.js
+      - run: npm run check
+      - run: npm test
+      - name: Restore Android signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/marina-booking-mobile.jks"
+      - name: Build signed APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/marina-booking-mobile.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          npm run mobile:sync
+          cd android
+          ./gradlew assembleRelease
+      - name: Prepare release files
+        shell: bash
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk MarinaBookingMobile.apk
+          sha256sum MarinaBookingMobile.apk > MarinaBookingMobile.apk.sha256
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" MarinaBookingMobile.apk MarinaBookingMobile.apk.sha256 --title "Marina Booking Mobile $GITHUB_REF_NAME" --generate-notes

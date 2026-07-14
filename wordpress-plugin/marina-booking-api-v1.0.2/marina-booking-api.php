@@ -337,7 +337,7 @@ final class Marina_Booking_API {
 		$method   = strtoupper( $request->get_method() );
 		$is_write = in_array( $method, array( 'POST', 'PUT', 'PATCH', 'DELETE' ), true );
 		// Price previews are POST requests because their input can be substantial, but they do not mutate data.
-		$is_price_preview = ( '/prices/calculate' === $request->get_route() );
+		$is_price_preview = ( '/' . self::NAMESPACE . '/prices/calculate' === untrailingslashit( (string) $request->get_route() ) );
 		$limit    = ( $is_write && ! $is_price_preview ) ? 60 : 300;
 		$window   = 300;
 		$bucket   = (int) floor( time() / $window );
@@ -415,17 +415,84 @@ final class Marina_Booking_API {
 			return $dates;
 		}
 
+		$exclude_booking_id = 0;
+		$exclude_value      = $request->get_param( 'exclude_booking_id' );
+		if ( null !== $exclude_value && '' !== $exclude_value ) {
+			$exclude_booking_id = absint( $exclude_value );
+			if ( ! is_numeric( $exclude_value ) || (float) $exclude_value !== (float) $exclude_booking_id || $exclude_booking_id < 1 ) {
+				return new WP_Error( 'marina_booking_api_invalid_exclude_booking_id', 'exclude_booking_id must be a positive integer.', array( 'status' => 422 ) );
+			}
+			$excluded_booking = self::raw_booking( $exclude_booking_id );
+			if ( is_wp_error( $excluded_booking ) ) {
+				return $excluded_booking;
+			}
+		}
+
 		// wpbc_api_is_dates_booked() expects a time component for its first and
 		// last values, even for all-day bookings. Keep create/edit inputs ergonomic
 		// while supplying the exact format the upstream helper requires.
-		$is_booked = wpbc_api_is_dates_booked( self::dates_for_availability( $dates ), $resource_id, array( 'is_use_booking_recurrent_time' => false ) );
+		$is_booked = self::dates_are_booked( $dates, $resource_id, $exclude_booking_id );
+		if ( is_wp_error( $is_booked ) ) {
+			return $is_booked;
+		}
 		return self::response(
 			array(
-				'resource_id' => $resource_id,
-				'dates'       => $dates,
-				'available'   => ! $is_booked,
+				'resource_id'        => $resource_id,
+				'dates'              => $dates,
+				'exclude_booking_id' => $exclude_booking_id ?: null,
+				'available'          => ! $is_booked,
 			)
 		);
+	}
+
+	/**
+	 * Run Booking Calendar's native availability lookup, excluding the reservation
+	 * currently being edited when the client supplies its server booking ID.
+	 *
+	 * @param array $dates Validated ISO dates or datetimes.
+	 * @param int   $resource_id Booking resource ID.
+	 * @param int   $exclude_booking_id Existing booking ID to ignore.
+	 * @return bool|WP_Error
+	 */
+	private static function dates_are_booked( $dates, $resource_id, $exclude_booking_id = 0 ) {
+		$booking_dates = self::dates_for_availability( $dates );
+		if ( ! $exclude_booking_id ) {
+			return wpbc_api_is_dates_booked( $booking_dates, $resource_id, array( 'is_use_booking_recurrent_time' => false ) );
+		}
+		if ( ! function_exists( 'wpbc__where_to_save_booking' ) || ! function_exists( 'wpbc_transform__24_hours_his__in__seconds' ) ) {
+			return new WP_Error( 'marina_booking_api_availability_unavailable', 'Booking Calendar cannot perform an edit-safe availability check.', array( 'status' => 503 ) );
+		}
+
+		$dates_only = array_map(
+			function( $value ) {
+				$parts = explode( ' ', $value );
+				return $parts[0];
+			},
+			$booking_dates
+		);
+		$first_parts = explode( ' ', $booking_dates[0] );
+		$last_parts  = explode( ' ', $booking_dates[ count( $booking_dates ) - 1 ] );
+		$times       = array(
+			wpbc_transform__24_hours_his__in__seconds( $first_parts[1] ),
+			wpbc_transform__24_hours_his__in__seconds( $last_parts[1] ),
+		);
+		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		$result      = wpbc__where_to_save_booking(
+			array(
+				'resource_id'                  => $resource_id,
+				'skip_booking_id'              => $exclude_booking_id,
+				'dates_only_sql_arr'           => $dates_only,
+				'time_as_seconds_arr'           => $times,
+				'how_many_items_to_book'        => 1,
+				'request_uri'                   => $request_uri,
+				'as_single_resource'            => true,
+				'is_use_booking_recurrent_time' => false,
+			)
+		);
+		if ( ! is_array( $result ) || ! isset( $result['result'] ) ) {
+			return new WP_Error( 'marina_booking_api_invalid_availability_result', 'Booking Calendar returned an invalid availability result.', array( 'status' => 502 ) );
+		}
+		return 'ok' !== $result['result'];
 	}
 
 
@@ -1306,8 +1373,8 @@ final class Marina_Booking_API {
 		$deposit       = isset( $payload['deposit'] ) && is_numeric( $payload['deposit'] ) ? (float) $payload['deposit'] : -1;
 		$total         = isset( $payload['total'] ) && is_numeric( $payload['total'] ) ? (float) $payload['total'] : -1;
 		$expected_note = isset( $payload['expected_note'] ) ? (string) $payload['expected_note'] : '';
-		if ( $deposit <= 0 || $total <= 0 || $deposit > $total || abs( $deposit * 100 - round( $deposit * 100 ) ) > 0.00001 ) {
-			return new WP_Error( 'marina_booking_api_invalid_deposit', 'deposit must be positive, no greater than total, and have at most two decimals.', array( 'status' => 422 ) );
+		if ( $deposit < 0 || $total <= 0 || $deposit > $total || abs( $deposit * 100 - round( $deposit * 100 ) ) > 0.00001 ) {
+			return new WP_Error( 'marina_booking_api_invalid_deposit', 'deposit must be non-negative, no greater than total, and have at most two decimals.', array( 'status' => 422 ) );
 		}
 		$current_note = isset( $booking['remark'] ) ? (string) $booking['remark'] : '';
 		if ( ! hash_equals( $current_note, $expected_note ) ) {
@@ -1321,10 +1388,10 @@ final class Marina_Booking_API {
 			return new WP_Error( 'marina_booking_api_total_conflict', 'The supplied total does not match the Cost saved in the booking note.', array( 'status' => 409 ) );
 		}
 		$balance = round( $total - $deposit, 2 );
-		$line    = 'Avans: ' . self::format_note_amount( $deposit ) . ', Cost: ' . self::format_note_amount( $total ) . ', Rest: ' . self::format_note_amount( $balance );
-		$note    = preg_replace( '/Avans:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?)),\s*Cost:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?)),\s*Rest:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?))(?![\d.,])/iu', $line, $current_note, 1, $replacement_count );
+		$line    = 'Cost total: ' . self::format_note_amount( $total ) . ' RON, Depozit: ' . self::format_note_amount( $deposit ) . ' RON, Rest: ' . self::format_note_amount( $balance ) . ' RON';
+		$note    = preg_replace( self::pricing_note_pattern(), $line, $current_note, 1, $replacement_count );
 		if ( 1 !== $replacement_count ) {
-			return new WP_Error( 'marina_booking_api_pricing_note_missing', 'The booking note does not contain the canonical Avans, Cost and Rest values.', array( 'status' => 422 ) );
+			return new WP_Error( 'marina_booking_api_pricing_note_missing', 'The booking note does not contain canonical pricing values.', array( 'status' => 422 ) );
 		}
 		global $wpdb;
 		$table = $wpdb->prefix . 'booking';
@@ -1358,6 +1425,68 @@ final class Marina_Booking_API {
 		);
 	}
 
+	private static function payment_request_data( $booking_id, $payload ) {
+		$reason     = isset( $payload['reason'] ) ? (string) $payload['reason'] : '';
+		$start_date = isset( $payload['start_date'] ) ? (string) $payload['start_date'] : '';
+		$end_date   = isset( $payload['end_date'] ) ? (string) $payload['end_date'] : '';
+		$nights     = isset( $payload['nights'] ) ? (int) $payload['nights'] : 0;
+		if ( 1 !== preg_match( '/^[A-Za-z]{6}$/D', $reason ) ) {
+			return new WP_Error( 'marina_booking_api_payment_reason_invalid', 'The EuPlatesc payment identifier must contain exactly 6 letters.', array( 'status' => 422 ) );
+		}
+		if ( ! self::is_iso_date( $start_date ) || ! self::is_iso_date( $end_date ) || $start_date > $end_date ) {
+			return new WP_Error( 'marina_booking_api_payment_dates_invalid', 'The payment request requires valid start_date and end_date values in YYYY-MM-DD format.', array( 'status' => 422 ) );
+		}
+		$expected_nights = max( 1, (int) ( new DateTimeImmutable( $start_date ) )->diff( new DateTimeImmutable( $end_date ) )->format( '%a' ) );
+		if ( $nights !== $expected_nights ) {
+			return new WP_Error( 'marina_booking_api_payment_nights_invalid', 'The number of nights does not match the reservation period.', array( 'status' => 422 ) );
+		}
+		$stored_dates = array_values(
+			array_unique(
+				array_map(
+					function( $row ) { return substr( (string) $row['date'], 0, 10 ); },
+					self::booking_dates( $booking_id )
+				)
+			)
+		);
+		if ( empty( $stored_dates ) || $start_date !== $stored_dates[0] || $end_date !== $stored_dates[ count( $stored_dates ) - 1 ] ) {
+			return new WP_Error( 'marina_booking_api_payment_period_conflict', 'The supplied payment period does not match the dates saved for this reservation.', array( 'status' => 409 ) );
+		}
+		$stored_nights = count( $stored_dates ) > 1 ? count( $stored_dates ) - 1 : count( $stored_dates );
+		if ( $nights !== $stored_nights ) {
+			return new WP_Error( 'marina_booking_api_payment_period_conflict', 'The supplied number of nights does not match the dates saved for this reservation.', array( 'status' => 409 ) );
+		}
+		return array( 'reason' => $reason, 'start_date' => $start_date, 'end_date' => $end_date, 'nights' => $nights, 'dates' => $stored_dates );
+	}
+
+	private static function is_iso_date( $value ) {
+		$date = DateTimeImmutable::createFromFormat( '!Y-m-d', (string) $value );
+		return false !== $date && $date->format( 'Y-m-d' ) === $value;
+	}
+
+	private static function payment_request_form( $form, $resource_id, $payment ) {
+		if ( ! function_exists( 'wpbc_get_dates_short_format' ) ) {
+			return new WP_Error( 'marina_booking_api_payment_form_failed', 'The EuPlatesc payment form could not be generated because Booking Calendar date formatting is unavailable.', array( 'status' => 502 ) );
+		}
+		$short_dates = wp_strip_all_tags( (string) wpbc_get_dates_short_format( implode( ',', $payment['dates'] ) ) );
+		if ( '' === $short_dates || false !== strpos( $short_dates, '^' ) || false !== strpos( $short_dates, '~' ) ) {
+			return new WP_Error( 'marina_booking_api_payment_form_failed', 'The EuPlatesc payment form could not be generated from the reservation dates.', array( 'status' => 502 ) );
+		}
+		$fields = array_filter( explode( '~', (string) $form ), 'strlen' );
+		$names  = array( 'selected_short_dates_hint' . $resource_id, 'nights_number_hint' . $resource_id );
+		$fields = array_values(
+			array_filter(
+				$fields,
+				function( $field ) use ( $names ) {
+					$parts = explode( '^', $field, 3 );
+					return ! isset( $parts[1] ) || ! in_array( $parts[1], $names, true );
+				}
+			)
+		);
+		$fields[] = 'text^' . $names[0] . '^' . $short_dates;
+		$fields[] = 'text^' . $names[1] . '^' . (int) $payment['nights'];
+		return implode( '~', $fields );
+	}
+
 	private static function send_booking_payment_request_operation( WP_REST_Request $request ) {
 		$booking_id = absint( $request['id'] );
 		$booking    = self::raw_booking( $booking_id );
@@ -1378,13 +1507,27 @@ final class Marina_Booking_API {
 			return new WP_Error( 'marina_booking_api_client_email_missing', 'The booking does not contain a valid client email.', array( 'status' => 422 ) );
 		}
 		$payload = self::payload( $request );
-		$reason  = self::sanitize_text( isset( $payload['reason'] ) ? $payload['reason'] : '', 1000 );
-		$sent    = wpbc_send_email_payment_request( $booking_id, (int) $booking['booking_type'], (string) $booking['form'], $reason );
-		if ( ! $sent ) {
-			return new WP_Error( 'marina_booking_api_payment_email_failed', 'Booking Calendar could not send the payment request email.', array( 'status' => 502 ) );
+		$payment = self::payment_request_data( $booking_id, $payload );
+		if ( is_wp_error( $payment ) ) {
+			return $payment;
+		}
+		$form = self::payment_request_form( (string) $booking['form'], (int) $booking['booking_type'], $payment );
+		if ( is_wp_error( $form ) ) {
+			return $form;
 		}
 		global $wpdb;
-		$table         = $wpdb->prefix . 'booking';
+		$table = $wpdb->prefix . 'booking';
+		if ( ! hash_equals( (string) $booking['form'], $form ) ) {
+			$form_updated = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET form = %s WHERE booking_id = %d AND form = %s", $form, $booking_id, (string) $booking['form'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( 1 !== $form_updated ) {
+				return new WP_Error( 'marina_booking_api_payment_form_conflict', 'The reservation changed while the EuPlatesc payment form was being prepared.', array( 'status' => 409 ) );
+			}
+		}
+		$reason = $payment['reason'];
+		$sent   = wpbc_send_email_payment_request( $booking_id, (int) $booking['booking_type'], $form, $reason );
+		if ( ! $sent ) {
+			return new WP_Error( 'marina_booking_api_payment_email_failed', 'Booking Calendar could not generate or send the EuPlatesc payment request email.', array( 'status' => 502 ) );
+		}
 		$updated       = $wpdb->query( $wpdb->prepare( "UPDATE {$table} SET pay_request = COALESCE(pay_request, 0) + 1 WHERE booking_id = %d", $booking_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$request_count = false === $updated ? ( isset( $booking['pay_request'] ) ? (int) $booking['pay_request'] : 0 ) : (int) $wpdb->get_var( $wpdb->prepare( "SELECT pay_request FROM {$table} WHERE booking_id = %d", $booking_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( 1 !== $updated ) {
@@ -1392,7 +1535,7 @@ final class Marina_Booking_API {
 		}
 		do_action( 'wpbc_booking_action__send_payment_request', $booking_id, $reason, isset( $booking['cost'] ) ? (float) $booking['cost'] : 0 );
 		self::audit( 'booking_payment_request_sent', $booking_id );
-		return self::response( array( 'booking_id' => $booking_id, 'sent' => true, 'email' => $email, 'deposit' => isset( $booking['cost'] ) ? (float) $booking['cost'] : 0, 'request_count' => $request_count, 'counter_updated' => 1 === $updated ) );
+		return self::response( array( 'booking_id' => $booking_id, 'sent' => true, 'email' => $email, 'deposit' => isset( $booking['cost'] ) ? (float) $booking['cost'] : 0, 'reason' => $reason, 'nights' => $payment['nights'], 'start_date' => $payment['start_date'], 'end_date' => $payment['end_date'], 'request_count' => $request_count, 'counter_updated' => 1 === $updated ) );
 	}
 
 	private static function booking_payment_payload( $booking_id, $booking ) {
@@ -1401,6 +1544,7 @@ final class Marina_Booking_API {
 		$deposit = isset( $booking['cost'] ) ? (float) $booking['cost'] : null;
 		return array(
 			'booking_id'       => (int) $booking_id,
+			'note'             => isset( $booking['remark'] ) ? (string) $booking['remark'] : '',
 			'deposit'          => $deposit,
 			'total'            => is_wp_error( $pricing ) ? null : $pricing['total'],
 			'balance'          => is_wp_error( $pricing ) ? null : $pricing['balance'],
@@ -1417,16 +1561,22 @@ final class Marina_Booking_API {
 	}
 
 	private static function parse_pricing_note( $note ) {
-		if ( ! preg_match( '/Avans:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?)),\s*Cost:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?)),\s*Rest:\s*((?:\d+\.\d{1,2}|\d+(?:[.\s]\d{3})*(?:,\d{1,2})?))(?![\d.,])/iu', (string) $note, $matches ) ) {
-			return new WP_Error( 'marina_booking_api_pricing_note_missing', 'The booking note does not contain the canonical Avans, Cost and Rest values.', array( 'status' => 422 ) );
+		if ( ! preg_match( self::pricing_note_pattern(), (string) $note, $matches ) ) {
+			return new WP_Error( 'marina_booking_api_pricing_note_missing', 'The booking note does not contain canonical pricing values.', array( 'status' => 422 ) );
 		}
-		$deposit = self::parse_note_amount( $matches[1] );
-		$total   = self::parse_note_amount( $matches[2] );
-		$balance = self::parse_note_amount( $matches[3] );
+		$canonical = isset( $matches['total'] ) && '' !== $matches['total'];
+		$deposit   = self::parse_note_amount( $canonical ? $matches['deposit'] : $matches['legacy_deposit'] );
+		$total     = self::parse_note_amount( $canonical ? $matches['total'] : $matches['legacy_total'] );
+		$balance   = self::parse_note_amount( $canonical ? $matches['balance'] : $matches['legacy_balance'] );
 		if ( null === $deposit || null === $total || null === $balance ) {
 			return new WP_Error( 'marina_booking_api_pricing_note_invalid', 'The booking pricing note contains invalid amounts.', array( 'status' => 422 ) );
 		}
 		return array( 'deposit' => $deposit, 'total' => $total, 'balance' => $balance );
+	}
+
+	private static function pricing_note_pattern() {
+		$amount = '(?:\\d+\\.\\d{1,2}|\\d+(?:[.\\s]\\d{3})*(?:,\\d{1,2})?)';
+		return '/(?:Cost total:\\s*(?<total>' . $amount . ')\\s*RON,\\s*Depozit:\\s*(?<deposit>' . $amount . ')\\s*RON,\\s*Rest:\\s*(?<balance>' . $amount . ')\\s*RON|Avans:\\s*(?<legacy_deposit>' . $amount . '),\\s*Cost:\\s*(?<legacy_total>' . $amount . '),\\s*Rest:\\s*(?<legacy_balance>' . $amount . '))(?![\\d.,])/iu';
 	}
 
 	private static function parse_note_amount( $value ) {

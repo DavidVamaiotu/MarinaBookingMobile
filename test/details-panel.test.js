@@ -19,6 +19,14 @@ test("reservation editor groups fields under clear Romanian sections", () => {
   assert.ok(indexSource.indexOf("<h3>Client</h3>") < indexSource.indexOf("<h3>Rezervare</h3>"));
 });
 
+test("reservation editor reports invalid fields instead of letting native validation fail silently", () => {
+  assert.match(indexSource, /<form id="detailsForm" class="panel-form" novalidate>/);
+  assert.match(appSource, /if \(!form\.checkValidity\(\)\)/);
+  assert.match(appSource, /form\.querySelector\(":invalid"\)/);
+  assert.match(appSource, /showError\(new Error\(invalid\?\.validationMessage/);
+  assert.match(appSource, /Rezervarea nu a mai fost găsită/);
+});
+
 test("technical WordPress fields stay hidden while client email remains editable", () => {
   assert.match(appSource, /const formData = \{ \.\.\.booking\.formData \}/);
   assert.match(appSource, /BookingFields\.matchesName\(name, "firstName", "lastName", "email", "phone", "adults", "children"\)/);
@@ -62,6 +70,15 @@ test("reservation details expose only requested conditional WordPress fields", (
   assert.equal((indexSource.match(/name="sendEmail"/g) || []).length, 2);
 });
 
+test("reservation details expose approval and trash actions with optional email notifications", () => {
+  assert.match(indexSource, /id="detailsStatus" type="button">Aprobă<\/button>/);
+  assert.match(indexSource, /id="detailsTrash" type="button">Gunoi<\/button>/);
+  assert.match(appSource, /detailsStatus[\s\S]*runApiAction\("setStatus", booking\.localId, \{ status:[\s\S]*sendEmail: Boolean\(form\.elements\.sendEmail\.checked\), source \}/);
+  assert.match(appSource, /detailsTrash[\s\S]*runApiAction\("setTrash", booking\.localId, \{ trashed:[\s\S]*sendEmail: Boolean\(form\.elements\.sendEmail\.checked\), source \}/);
+  assert.match(appSource, /detailsStatus"\)\.textContent = approved \? "Pune în așteptare" : "Aprobă"/);
+  assert.match(appSource, /detailsTrash"\)\.textContent = booking\.trashed \? "Restabilește" : "Gunoi"/);
+});
+
 test("rooms hide camping electricity without deleting its stored value", () => {
   assert.match(appSource, /if \(isElectricityField\(name\)\) return activeWorkspace === "camping"/);
   assert.doesNotMatch(appSource, /delete formData\[name\]/);
@@ -87,14 +104,37 @@ test("booking details expose separate queueable deposit and payment-email action
   assert.match(indexSource, /id="paymentForm"/);
   assert.match(indexSource, /id="paymentSection"/);
   assert.match(indexSource, /name="depositAmount"/);
+  assert.match(indexSource, /name="depositAmount"[^>]*min="0"/);
   assert.match(indexSource, /id="saveDeposit"/);
   assert.match(indexSource, /id="sendPaymentRequest"/);
-  assert.match(appSource, /window\.marina\.updateDeposit\(booking\.localId/);
-  assert.match(appSource, /window\.marina\.requestPayment\(booking\.localId/);
+  assert.match(indexSource, /id="paymentNoteText"/);
+  assert.match(indexSource, /id="paymentDatabaseDeposit"/);
+  assert.match(appSource, /runApiAction\("updateDeposit", booking\.localId/);
+  assert.match(appSource, /amount < 0 \|\| amount > total/);
+  assert.match(appSource, /runApiAction\("requestPayment", booking\.localId/);
   assert.match(appSource, /window\.marina\.getPayment\(booking\.localId/);
   assert.match(appSource, /snapshot\?\.deposit/);
   assert.match(appSource, /Adaugă emailul în Detalii rezervare/);
-  assert.match(appSource, /Email programat; va fi trimis după salvarea avansului/);
+  assert.match(appSource, /requestPayment: \["Se programează emailul de plată…", "Emailul de plată a fost programat\."\]/);
+});
+
+test("payment popup trusts the WordPress snapshot and shows its note and database deposit", () => {
+  assert.match(appSource, /const serverNoteAvailable = typeof snapshot\?\.note === "string"/);
+  assert.match(appSource, /const authoritativePaymentAvailable = Boolean\(snapshot && snapshotTotal !== null && databaseDeposit !== null\)/);
+  assert.match(appSource, /paymentNoteText"\)\.textContent = note \|\| "Nu există notă\."/);
+  assert.match(appSource, /paymentDatabaseDeposit"\)\.textContent = databaseDeposit === null/);
+  assert.match(appSource, /runApiAction\("updateDeposit", booking\.localId, \{ deposit: amount, total, note, source: activeWorkspace \}/);
+  assert.doesNotMatch(appSource, /if \(!current\) throw new Error\("Nota rezervării nu conține un Cost valid\."\)/);
+});
+
+test("payment email refreshes the current deposit before sending when no deposit change is queued", () => {
+  const start = appSource.indexOf("async function queuePaymentEmail");
+  const paymentEmail = appSource.slice(start, appSource.indexOf('$("#sendPaymentRequest")', start));
+  const refreshIndex = paymentEmail.indexOf('runApiAction("updateDeposit"');
+  const emailIndex = paymentEmail.indexOf('runApiAction("requestPayment"');
+  assert.ok(refreshIndex > 0);
+  assert.ok(emailIndex > refreshIndex);
+  assert.match(paymentEmail, /if \(!pendingDeposit\) \{[\s\S]*runApiAction\("updateDeposit", booking\.localId, \{ deposit, total, note, source \}/);
 });
 
 test("booking popup exposes deposit and payment email through a three-dot menu", () => {

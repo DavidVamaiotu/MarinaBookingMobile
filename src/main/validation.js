@@ -1,6 +1,7 @@
 "use strict";
 
 const { toStayDateTimes } = require("../shared/booking-calendar");
+const PaymentRequest = require("../shared/payment-request");
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME = /^\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
@@ -106,13 +107,16 @@ function range(value) {
 function deposit(value) {
   value = object(value);
   const amount = Number(value.deposit);
-  if (!Number.isFinite(amount) || amount <= 0 || Math.abs(Math.round(amount * 100) - amount * 100) > 0.000001) throw new TypeError("Avansul trebuie să fie pozitiv și să aibă cel mult două zecimale.");
-  return { deposit: amount };
+  if (!Number.isFinite(amount) || amount < 0 || Math.abs(Math.round(amount * 100) - amount * 100) > 0.000001) throw new TypeError("Avansul nu poate fi negativ și trebuie să aibă cel mult două zecimale.");
+  const total = Number(value.total);
+  if (!Number.isFinite(total) || total <= 0 || amount > total) throw new TypeError("Costul verificat trebuie să fie pozitiv și cel puțin egal cu avansul.");
+  const note = String(value.note ?? "");
+  if (!note || note.length > 20000) throw new TypeError("Nota verificată din WordPress este obligatorie și trebuie să aibă cel mult 20000 de caractere.");
+  return { deposit: amount, total, note };
 }
 
 function paymentRequest(value) {
-  value = object(value);
-  return { reason: text(value.reason, "reason", 1000) };
+  return PaymentRequest.validate(object(value));
 }
 
 function settings(value) {

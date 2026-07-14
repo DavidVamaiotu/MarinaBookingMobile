@@ -69,7 +69,7 @@
 
   <aside class="side-panel" id="detailsPanel" aria-labelledby="detailsTitle" hidden>
     <header><div><p>Detalii rezervare</p><h2 id="detailsTitle">Rezervare</h2></div><button class="icon" data-close="detailsPanel" type="button" aria-label="Închide detaliile">×</button></header>
-    <form id="detailsForm" class="panel-form">
+    <form id="detailsForm" class="panel-form" novalidate>
       <section class="details-section">
         <header><h3>Client</h3></header>
         <div class="field-grid">
@@ -103,6 +103,10 @@
         <header><h3>Salvare</h3></header>
         <label class="check email-option"><input name="sendEmail" type="checkbox"><span>Trimite notificări pentru acțiuni</span></label>
         <button class="primary details-save" type="submit">Salvează rezervarea</button>
+        <div class="details-reservation-actions" aria-label="Acțiuni rezervare">
+          <button class="secondary" id="detailsStatus" type="button">Aprobă</button>
+          <button class="danger subtle" id="detailsTrash" type="button">Gunoi</button>
+        </div>
       </section>
     </form>
   </aside>
@@ -113,11 +117,14 @@
       <section class="payment-section" id="paymentSection">
         <header><h3>Plată avans</h3><p>Suma salvată este cea folosită de linkul de plată WordPress.</p></header>
         <div class="payment-facts" id="paymentFacts"></div>
+        <div class="payment-verification">
+          <div><strong id="paymentNoteLabel">Notă rezervare</strong><pre id="paymentNoteText">Se verifică…</pre></div>
+          <div><strong>Avans în baza de date WordPress</strong><span id="paymentDatabaseDeposit">Se verifică…</span></div>
+        </div>
         <div class="field-grid payment-controls">
-          <label>Avans nou<input name="depositAmount" type="number" inputmode="decimal" min="0.01" step="0.01"></label>
+          <label>Avans nou<input name="depositAmount" type="number" inputmode="decimal" min="0" step="0.01"></label>
           <button class="secondary" id="saveDeposit" type="button">Salvează avansul</button>
         </div>
-        <label>Motiv / mesaj opțional<textarea name="paymentReason" rows="2" maxlength="1000" placeholder="Va fi disponibil în șablon prin [paymentreason]"></textarea></label>
         <button class="primary" id="sendPaymentRequest" type="button">Trimite emailul de plată</button>
         <p class="payment-status" id="paymentStatus"></p>
       </section>
@@ -188,17 +195,18 @@
   </dialog>
 
   <aside class="diagnostics" id="diagnostics" hidden>
-    <header><div><p>Coada locală persistentă</p><h2>Diagnostic sincronizare</h2></div><div class="diagnostic-header-actions"><button class="secondary compact" id="clearQueueIssues" type="button" hidden>Șterge problemele</button><button class="icon" data-close="diagnostics" type="button" aria-label="Închide diagnosticul">×</button></div></header>
+    <header><div><p>Coada locală persistentă</p><h2>Diagnostic sincronizare</h2></div><div class="diagnostic-header-actions"><button class="secondary compact" id="clearQueueIssues" type="button" hidden>Anulează modificările eșuate</button><button class="icon" data-close="diagnostics" type="button" aria-label="Închide diagnosticul">×</button></div></header>
     <div class="diagnostic-summary" id="diagnosticSummary"></div>
     <div class="command-list" id="commandList"></div>
   </aside>
 
-    <div class="toast" id="toast" hidden></div>
+    <div class="toast-region" id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
   </div>
   <script src="src/shared/booking-fields.js"></script>
   <script src="src/shared/pricing-note.js"></script>
   <script src="src/shared/timeline-adapter.js"></script>
   <script src="src/shared/booking-calendar.js"></script>
+  <script src="src/shared/payment-request.js"></script>
   <script src="src/shared/camera-transform.js"></script>
   <script src="app.js"></script>
 </body>

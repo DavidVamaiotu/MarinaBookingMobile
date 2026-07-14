@@ -196,21 +196,77 @@ test("mobile persists deposit and payment-email commands in dependency order", a
     requests.push({ url, options });
     if (url.endsWith("/resources")) return jsonResponse({ resources: [{ id: 4, title: "Camera 4", active: true }] });
     if (url.includes("/bookings?")) return jsonResponse({ bookings: [booking] });
-    if (url.endsWith("/bookings/88/deposit")) return jsonResponse({ booking_id: 88, note: "Avans: 40, Cost: 100, Rest: 60" });
+    if (url.endsWith("/bookings/88/deposit")) return jsonResponse({ booking_id: 88, note: "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON" });
     if (url.endsWith("/bookings/88/payment-request")) return jsonResponse({ booking_id: 88, sent: true });
     throw new Error(`Unexpected synthetic request: ${url}`);
   });
   await harness.marina.refresh({ start: "2026-07-01", end: "2026-07-31" });
   const deposit = await harness.marina.updateDeposit("server:88", { deposit: 40 });
-  const email = await harness.marina.requestPayment("server:88", { reason: "Plată avans" });
+  const payment = { reason: "aBcDeF", nights: 1, start_date: "2026-07-20", end_date: "2026-07-21" };
+  const email = await harness.marina.requestPayment("server:88", payment);
   assert.equal(email.dependsOnCommandId, deposit.id);
   while (!requests.some((item) => item.url.endsWith("/bookings/88/payment-request"))) await new Promise((resolve) => setTimeout(resolve, 0));
   const mutations = requests.filter((item) => item.url.includes("/bookings/88/") && !item.url.endsWith("/payment"));
   assert.deepEqual(mutations.map((item) => item.url.split("/").at(-1)), ["deposit", "payment-request"]);
   assert.equal(mutations[0].options.headers["Idempotency-Key"], deposit.id);
   assert.equal(mutations[1].options.headers["Idempotency-Key"], email.id);
+  assert.deepEqual(JSON.parse(mutations[1].options.body), payment);
   const state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
-  assert.equal(state.bookings[0].note, "Avans: 40, Cost: 100, Rest: 60");
+  assert.equal(state.bookings[0].note, "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON");
+});
+
+test("mobile persists a zero deposit in WordPress and keeps the full balance", async () => {
+  const requests = [];
+  const booking = { booking_id: 90, resource_id: 4, dates: [{ date: "2026-07-20" }, { date: "2026-07-21" }], form_data: {}, remark: "Avans: 30, Cost: 100, Rest: 70" };
+  const harness = await configuredBridge(async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url.endsWith("/resources")) return jsonResponse({ resources: [{ id: 4, title: "Camera 4", active: true }] });
+    if (url.includes("/bookings?")) return jsonResponse({ bookings: [booking] });
+    if (url.endsWith("/bookings/90/deposit")) return jsonResponse({ booking_id: 90, deposit: 0, total: 100, balance: 100, note: "Cost total: 100 RON, Depozit: 0 RON, Rest: 100 RON" });
+    throw new Error(`Unexpected synthetic request: ${url}`);
+  });
+  await harness.marina.refresh({ start: "2026-07-01", end: "2026-07-31" });
+  await harness.marina.updateDeposit("server:90", { deposit: 0 });
+  while (!requests.some((item) => item.url.endsWith("/bookings/90/deposit"))) await new Promise((resolve) => setTimeout(resolve, 0));
+  const request = requests.find((item) => item.url.endsWith("/bookings/90/deposit"));
+  assert.deepEqual(JSON.parse(request.options.body), {
+    deposit: 0,
+    total: 100,
+    expected_note: "Avans: 30, Cost: 100, Rest: 70"
+  });
+  let state;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  } while (state.commands.some((command) => command.type === "deposit_update" && command.status !== "synced"));
+  assert.equal(state.bookings[0].note, "Cost total: 100 RON, Depozit: 0 RON, Rest: 100 RON");
+});
+
+test("mobile blocks payment email after a failed deposit and clear restores the server note", async () => {
+  let paymentRequests = 0;
+  const booking = { booking_id: 188, resource_id: 4, dates: [{ date: "2026-07-20" }, { date: "2026-07-21" }], form_data: { email: { value: "client@example.com", type: "email" } }, remark: "Avans: 30, Cost: 100, Rest: 70" };
+  const harness = await configuredBridge(async (url) => {
+    if (url.endsWith("/resources")) return jsonResponse({ resources: [{ id: 4, title: "Camera 4", active: true }] });
+    if (url.includes("/bookings?")) return jsonResponse({ bookings: [booking] });
+    if (url.endsWith("/bookings/188/deposit")) return jsonResponse({ code: "deposit_rejected", message: "Avans respins." }, 422);
+    if (url.endsWith("/bookings/188/payment-request")) { paymentRequests += 1; return jsonResponse({ booking_id: 188, sent: true }); }
+    throw new Error(`Unexpected synthetic request: ${url}`);
+  });
+  await harness.marina.refresh({ start: "2026-07-01", end: "2026-07-31" });
+  await harness.marina.updateDeposit("server:188", { deposit: 40 });
+  let state;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  } while (!state.commands.some((command) => command.type === "deposit_update" && command.status === "failed"));
+  assert.equal(state.bookings[0].note, "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON");
+  await assert.rejects(harness.marina.requestPayment("server:188", { reason: "aBcDeF", nights: 1, start_date: "2026-07-20", end_date: "2026-07-21" }), /Actualizarea avansului are o problemă/);
+  assert.equal(paymentRequests, 0);
+  assert.equal(await harness.marina.clearFailedCommands(), 1);
+  state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  assert.equal(state.bookings[0].note, booking.remark);
+  assert.equal(state.bookings[0].syncState, "synced");
+  assert.equal(state.commands.length, 0);
 });
 
 test("mobile recovers an interrupted sending deposit with its original idempotency key", async () => {
@@ -234,14 +290,14 @@ test("mobile recovers an interrupted sending deposit with its original idempoten
   const second = bridgeHarness(async (url, options = {}) => {
     if (url.endsWith("/resources")) return jsonResponse({ resources: [{ id: 4, title: "Camera 4", active: true }] });
     if (url.includes("/bookings?")) return jsonResponse({ bookings: [booking] });
-    if (url.endsWith("/bookings/89/deposit")) { retried.push(options.headers["Idempotency-Key"]); return jsonResponse({ booking_id: 89, note: "Avans: 40, Cost: 100, Rest: 60" }); }
+    if (url.endsWith("/bookings/89/deposit")) { retried.push(options.headers["Idempotency-Key"]); return jsonResponse({ booking_id: 89, note: "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON" }); }
     throw new Error(`Unexpected synthetic request: ${url}`);
   }, first.localStorage);
   await second.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
   second.dispatchWindow("online");
   while (!retried.length) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(retried[0], original.id);
-  releaseRequest(jsonResponse({ booking_id: 89, note: "Avans: 40, Cost: 100, Rest: 60" }));
+  releaseRequest(jsonResponse({ booking_id: 89, note: "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON" }));
 });
 
 test("mobile Camping create delegates capacity allocation to WordPress", async () => {
@@ -360,6 +416,10 @@ test("mobile action history keeps failed mutations with their error", async () =
   assert.equal(restored.commands[0].errorCode, "note_rejected");
   assert.equal(restored.commands[0].errorMessage, "Nota a fost respinsă.");
   assert.equal(restored.diagnostics.failed, 1);
+  assert.equal(await harness.marina.clearFailedCommands(), 1);
+  const cleared = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  assert.equal(cleared.commands.length, 0);
+  assert.equal(cleared.diagnostics.failed, 0);
 });
 
 test("mobile rejects HTTP 200 WordPress errors instead of updating its local cache", async () => {
@@ -382,7 +442,7 @@ test("mobile rejects HTTP 200 WordPress errors instead of updating its local cac
   assert.equal(restored.commands[0].errorCode, "rest_cookie_invalid_nonce");
 });
 
-test("mobile edits check newly introduced room dates before PATCH", async () => {
+test("mobile edits check the full room stay while excluding the edited booking", async () => {
   const requests = [];
   const booking = { booking_id: 66, resource_id: 4, approved: 0, dates: [{ date: "2026-07-16" }, { date: "2026-07-17" }], form_data: { name: { value: "Elena", type: "text" } } };
   const harness = await configuredBridge(async (url, options = {}) => {
@@ -397,7 +457,11 @@ test("mobile edits check newly introduced room dates before PATCH", async () => 
   await harness.marina.editBooking("server:66", { resourceId: 4, dates: ["2026-07-16", "2026-07-17", "2026-07-18"], formData: booking.form_data, bookingFormType: "standard", sendEmail: true });
   const availability = requests.find((item) => item.url.endsWith("/availability"));
   const edit = requests.find((item) => item.url.endsWith("/bookings/66") && item.options.method === "PATCH");
-  assert.deepEqual(JSON.parse(availability.options.body).dates, ["2026-07-18 12:00:02"]);
+  assert.deepEqual(JSON.parse(availability.options.body), {
+    resource_id: 4,
+    dates: ["2026-07-16 15:00:01", "2026-07-17 00:00:00", "2026-07-18 12:00:02"],
+    exclude_booking_id: 66
+  });
   assert.equal(JSON.parse(edit.options.body).send_email, true);
 });
 

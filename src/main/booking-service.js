@@ -169,15 +169,15 @@ class BookingService extends EventEmitter {
     return this.api.payment(booking.serverId);
   }
 
-  updateDeposit(localId, deposit) {
-    const result = this.database.queueDepositUpdate(localId, deposit);
+  updateDeposit(localId, payment) {
+    const result = this.database.queueDepositUpdate(localId, payment);
     this.emitState();
     this.queue.schedule(0);
     return result;
   }
 
-  requestPayment(localId, reason) {
-    const result = this.database.queuePaymentRequest(localId, reason);
+  requestPayment(localId, paymentRequest) {
+    const result = this.database.queuePaymentRequest(localId, paymentRequest);
     this.emitState();
     this.queue.schedule(0);
     return result;
@@ -228,6 +228,12 @@ class BookingService extends EventEmitter {
     if (command?.error_code === "endpoint_changed") this.queue.resumeAfterCredentials({ retryFailed: false });
     else this.queue.schedule(0);
     this.emitState();
+  }
+
+  clearFailedCommands() {
+    const cleared = this.database.dismissFailedCommands();
+    this.emitState();
+    return cleared;
   }
 
   revert(localId) {

@@ -1,6 +1,7 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, safeStorage, session, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const path = require("node:path");
 const { BookingDatabase } = require("./src/main/database");
 const { CredentialVault } = require("./src/main/credential-vault");
@@ -13,8 +14,33 @@ app.setName("Marina Booking Desktop");
 if (process.platform === "linux") app.commandLine.appendSwitch("password-store", "gnome-libsecret");
 
 let window = null;
+let updaterConfigured = false;
 const contexts = {};
 const VALID_SOURCES = new Set(["rooms", "camping"]);
+
+function configureAutoUpdater() {
+  if (updaterConfigured || !app.isPackaged || process.platform !== "win32") return;
+  updaterConfigured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("error", (error) => console.error("Desktop update failed:", error));
+  autoUpdater.on("update-downloaded", async ({ version }) => {
+    const { response } = await dialog.showMessageBox(window, {
+      type: "info",
+      title: "Actualizare pregătită",
+      message: `Marina Booking Desktop ${version} a fost descărcată.`,
+      detail: "Repornește aplicația pentru a instala actualizarea.",
+      buttons: ["Repornește și instalează", "Mai târziu"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+    if (response === 0) autoUpdater.quitAndInstall(false, true);
+  });
+  setTimeout(() => void autoUpdater.checkForUpdates().catch((error) => {
+    console.error("Desktop update check failed:", error);
+  }), 4000);
+}
 
 function contextFor(source) {
   if (!VALID_SOURCES.has(source) || !contexts[source]) throw new TypeError("Sursa rezervărilor este invalidă.");
@@ -48,8 +74,8 @@ function registerIpc() {
   ipcMain.handle("booking:note", (_event, source, localId, patch) => contextFor(source).service.update(validate.id(localId, "localId"), validate.bookingPatch(patch), "note"));
   ipcMain.handle("booking:trash", (_event, source, localId, patch) => contextFor(source).service.update(validate.id(localId, "localId"), validate.bookingPatch(patch), "trash"));
   ipcMain.handle("booking:payment", (_event, source, localId) => contextFor(source).service.payment(validate.id(localId, "localId")));
-  ipcMain.handle("booking:deposit", (_event, source, localId, input) => contextFor(source).service.updateDeposit(validate.id(localId, "localId"), validate.deposit(input).deposit));
-  ipcMain.handle("booking:payment-request", (_event, source, localId, input) => contextFor(source).service.requestPayment(validate.id(localId, "localId"), validate.paymentRequest(input).reason));
+  ipcMain.handle("booking:deposit", (_event, source, localId, input) => contextFor(source).service.updateDeposit(validate.id(localId, "localId"), validate.deposit(input)));
+  ipcMain.handle("booking:payment-request", (_event, source, localId, input) => contextFor(source).service.requestPayment(validate.id(localId, "localId"), validate.paymentRequest(input)));
   ipcMain.handle("booking:availability", (_event, source, input) => {
     const { service } = contextFor(source);
     input = validate.object(input);
@@ -61,6 +87,7 @@ function registerIpc() {
   ipcMain.handle("booking:quote-clear", (_event, source) => contextFor(source).service.clearQuoteCache());
   ipcMain.handle("queue:retry", (_event, source, id) => contextFor(source).service.retry(validate.id(id, "commandId")));
   ipcMain.handle("queue:revert", (_event, source, localId) => contextFor(source).service.revert(validate.id(localId, "localId")));
+  ipcMain.handle("queue:clear-failed", (_event, source) => contextFor(source).service.clearFailedCommands());
   ipcMain.handle("settings:get", (_event, source) => contextFor(source).service.settings());
   ipcMain.handle("settings:save", (_event, source, input) => {
     const { service, database } = contextFor(source);
@@ -169,6 +196,7 @@ async function start() {
   registerIpc();
   for (const context of Object.values(contexts)) context.service.start();
   await createWindow();
+  configureAutoUpdater();
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();

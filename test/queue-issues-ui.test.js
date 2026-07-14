@@ -9,10 +9,9 @@ const root = path.join(__dirname, "..");
 const appSource = fs.readFileSync(path.join(root, "app.js"), "utf8");
 const htmlSource = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
-test("queue menu can dismiss issue messages without changing queued commands", () => {
-  assert.match(htmlSource, /id="clearQueueIssues"[^>]*hidden>Șterge problemele<\/button>/);
-  assert.match(appSource, /QUEUE_ISSUE_STATUSES = new Set\(\["failed", "conflict", "needs_attention"\]\)/);
-  assert.match(appSource, /queueIssueToken\(command\).*command\.updatedAt/);
-  assert.match(appSource, /dismissed\.add\(queueIssueToken\(command\)\);\s*renderCommands\(\);/);
-  assert.doesNotMatch(appSource, /clearQueueIssues[\s\S]{0,500}window\.marina\.(?:retryCommand|revertBooking)/);
+test("queue menu explicitly confirms discarding failed local work", () => {
+  assert.match(htmlSource, /id="clearQueueIssues"[^>]*hidden>Anulează modificările eșuate<\/button>/);
+  assert.match(appSource, /failedCount = state\.commands\.filter\(\(command\) => command\.status === "failed"\)\.length/);
+  assert.match(appSource, /confirm\("Anulezi modificările locale eșuate și comenzile care depind de ele\?/);
+  assert.match(appSource, /runApiAction\("clearFailedCommands"\)/);
 });

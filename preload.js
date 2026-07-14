@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   clearQuoteCache: () => invoke("booking:quote-clear", currentSource),
   retryCommand: (id) => invoke("queue:retry", currentSource, id),
   revertBooking: (id) => invoke("queue:revert", currentSource, id),
+  clearFailedCommands: () => invoke("queue:clear-failed", currentSource),
   getSettings: (source = currentSource) => invoke("settings:get", sources.has(source) ? source : currentSource),
   saveSettings: (input) => invoke("settings:save", sourceFor(input), input),
   testConnection: (input) => invoke("settings:test", sourceFor(input), input),

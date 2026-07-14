@@ -51,13 +51,13 @@ test("renderer uses fast quotes while editing and forced full quotes before save
 test("create submit keeps the form reference across the final asynchronous quote", () => {
   const renderer = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   assert.match(renderer, /\$\("#createForm"\)\.addEventListener\("submit", async \(event\) => \{\s*event\.preventDefault\(\);\s*const form = event\.currentTarget;/);
-  assert.match(renderer, /if \(!await refreshPriceNow\(\{ forceFresh: true \}\)\) return;\s*if \(source !== activeWorkspace \|\| !createDialog\.open\) throw workspaceChangedError\(\);\s*const input = \{ \.\.\.formBookingInput\(form\), source \};\s*createDialog\.close\(\);\s*showToast\("Se trimite rezervarea…"\);\s*const created = await window\.marina\.createBooking\(input\);\s*await waitForCreatedBooking\(created, input, source\);/);
+  assert.match(renderer, /if \(!await refreshPriceNow\(\{ forceFresh: true \}\)\) return;\s*if \(source !== activeWorkspace \|\| !createDialog\.open\) throw workspaceChangedError\(\);\s*const input = \{ \.\.\.formBookingInput\(form\), source \};\s*createDialog\.close\(\);\s*const created = await runApiAction\("createBooking", input\);\s*await waitForCreatedBooking\(created, input, source\);/);
   assert.doesNotMatch(renderer, /if \(!createDialog\.open\) createDialog\.showModal\(\)/);
   assert.doesNotMatch(renderer, /formBookingInput\(event\.currentTarget\)/);
 });
 
 test("new reservations generate their note from the confirmed quote", () => {
   const renderer = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(renderer, /return `Avans: \$\{amount\(quote\.deposit\)\}, Cost: \$\{amount\(quote\.total\)\}, Rest: \$\{amount\(quote\.balance\)\}`/);
+  assert.match(renderer, /return PricingNote\.format\(quote\)/);
   assert.match(renderer, /note: createPricingNote\(createQuote\)/);
 });

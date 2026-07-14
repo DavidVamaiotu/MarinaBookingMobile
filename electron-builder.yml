@@ -8,6 +8,12 @@ directories:
   output: dist-electron
   buildResources: assets
 
+publish:
+  provider: github
+  owner: DavidVamaiotu
+  repo: MarinaBookingDesktop
+  releaseType: release
+
 files:
   - electron-main.js
   - preload.js

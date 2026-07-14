@@ -11,6 +11,12 @@ test("typed IPC validators reject malformed booking intent", () => {
   assert.throws(() => validate.bookingInput({ resourceId: "x", dates: [], formData: {} }));
   assert.throws(() => validate.bookingPatch({ status: "deleted" }));
   assert.throws(() => validate.range({ start: "2026-08-01", end: "2026-07-01" }));
+  assert.throws(() => validate.deposit({ deposit: 40, total: 30, note: "Avans: 10, Cost: 30, Rest: 20" }));
+  assert.deepEqual(validate.deposit({ deposit: 0, total: 100, note: "Avans: 30, Cost: 100, Rest: 70" }), { deposit: 0, total: 100, note: "Avans: 30, Cost: 100, Rest: 70" });
+  assert.throws(() => validate.deposit({ deposit: -1, total: 100, note: "Avans: 30, Cost: 100, Rest: 70" }), /nu poate fi negativ/);
+  assert.deepEqual(validate.deposit({ deposit: 40, total: 100, note: "Info\nAvans: 30, Cost: 100, Rest: 70" }), { deposit: 40, total: 100, note: "Info\nAvans: 30, Cost: 100, Rest: 70" });
+  assert.deepEqual(validate.paymentRequest({ reason: "aBcDeF", nights: 2, start_date: "2026-07-20", end_date: "2026-07-22" }), { reason: "aBcDeF", nights: 2, start_date: "2026-07-20", end_date: "2026-07-22" });
+  assert.throws(() => validate.paymentRequest({ reason: "123456", nights: 2, start_date: "2026-07-20", end_date: "2026-07-22" }), /exact 6 litere/);
   assert.equal(validate.bookingInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } } }).resourceId, 4);
 });
 

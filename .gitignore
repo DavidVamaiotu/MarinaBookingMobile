@@ -8,3 +8,5 @@ coverage/
 *.sqlite-wal
 .env
 .DS_Store
+*.jks
+*.keystore

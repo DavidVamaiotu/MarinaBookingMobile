@@ -90,7 +90,10 @@ class CommandQueue extends EventEmitter {
       let response;
       if (!this.skipAvailabilityChecks && (command.type === "create" || (command.type === "edit" && command.payload.availability_dates?.length))) {
         const dates = command.type === "create" ? command.payload.dates : command.payload.availability_dates;
-        const availability = await this.api.availability(command.resource_id, dates, { expectedApiBaseUrl: command.api_base_url });
+        const availability = await this.api.availability(command.resource_id, dates, {
+          expectedApiBaseUrl: command.api_base_url,
+          excludeBookingId: command.type === "edit" ? booking.serverId : undefined
+        });
         if (availability.available === false) throw Object.assign(new Error("Datele solicitate nu mai sunt disponibile."), { code: "availability_conflict", conflict: true, permanent: true, payload: availability });
       }
       if (command.type === "create") response = await this.api.create(command.payload, command.idempotency_key, { expectedApiBaseUrl: command.api_base_url });

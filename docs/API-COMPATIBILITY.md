@@ -20,6 +20,6 @@ Pentru Camping, `GET /resources` trebuie să expună relația `parent_id` pentru
 
 v1.0.3 și versiunile mai vechi nu oferă modurile necesare pentru prețuri, astfel că dialogul de creare necesită upgrade la v1.0.4. Copiile v1.0.0/v1.0.1 nu sunt sigure pentru reîncercarea automată a unei creări după un timeout necunoscut.
 
-O limitare rămasă este verificarea disponibilității la editare: `/availability` nu are `exclude_booking_id`. Clientul verifică doar zilele introduse când spațiul nu se schimbă, apoi se bazează pe endpoint-ul de editare Booking Calendar pentru validarea finală. Dacă se schimbă spațiul, sunt verificate toate zilele.
+La editare, clientul verifică întregul interval nou prin `/availability` și trimite `exclude_booking_id` cu ID-ul rezervării WordPress editate. Pluginul validează ID-ul și îl transmite mecanismului nativ Booking Calendar `skip_booking_id`, astfel încât rezervarea nu intră în conflict cu propriile date, dar suprapunerile cu alte rezervări rămân blocate. Endpoint-ul final de editare repetă aceeași protecție în operația atomică Booking Calendar.
 
 Dimensiunea maximă a unei pagini este 100; clientul paginează până când primește o pagină incompletă.
