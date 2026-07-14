@@ -10,7 +10,9 @@ const bumpPath = path.join(root, "bump");
 const bump = readFileSync(bumpPath, "utf8");
 
 test("bump is executable and guards the dual-repository release", () => {
-  assert.ok(statSync(bumpPath).mode & 0o111);
+  if (process.platform !== "win32") {
+    assert.ok(statSync(bumpPath).mode & 0o111);
+  }
   assert.match(bump, /Including the current tracked and untracked changes/);
   assert.match(bump, /git add -A/);
   assert.match(bump, /origin\/main/);
