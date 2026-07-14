@@ -12,7 +12,6 @@
     "check": "node scripts/check-syntax.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --x64 --publish never",
-    "dist:publish": "electron-builder --win nsis --x64 --publish always",
     "mobile:web": "node scripts/build-mobile-web.js",
     "mobile:sync": "npm run mobile:web && cap sync android",
     "mobile:apk": "node scripts/build-android.js"

@@ -13,8 +13,8 @@ jobs:
     if: github.repository == 'DavidVamaiotu/MarinaBookingDesktop'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -22,6 +22,9 @@ jobs:
       - run: node scripts/verify-release-version.js
       - run: npm run check
       - run: npm test
-      - run: npm run dist:publish
+      - run: npm run dist
+      - name: Publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist-electron/MarinaBookingDesktop-Setup-*.exe dist-electron/MarinaBookingDesktop-Setup-*.exe.blockmap dist-electron/latest.yml --title "Marina Booking Desktop $GITHUB_REF_NAME" --generate-notes
