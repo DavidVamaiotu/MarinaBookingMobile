@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
-    "check": "node --check electron-main.js && node --check preload.js && node --check app.js && node --check scripts/*.js && node --check src/main/*.js && node --check src/shared/*.js",
+    "check": "node scripts/check-syntax.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --x64 --publish never",
     "dist:publish": "electron-builder --win nsis --x64 --publish always",
