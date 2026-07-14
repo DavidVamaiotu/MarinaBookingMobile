@@ -41,6 +41,8 @@ Versiunile instalate verifică automat actualizările la pornire. Windows descar
 
 Publicarea este separată pe cele două repository-uri. După actualizarea aceleiași versiuni în `package.json` și `android/app/build.gradle`, tag-ul `vX.Y.Z` pornește workflow-ul desktop în repository-ul Desktop și workflow-ul APK semnat în repository-ul Mobile. `scripts/verify-release-version.js` oprește release-ul dacă tag-ul și versiunile nu coincid.
 
+Pentru un release complet rulează `./bump`. Fără argument crește versiunea patch; acceptă și `./bump minor`, `./bump major` sau `./bump X.Y.Z`. Comanda verifică repository-urile, rulează testele, publică același commit și tag în ambele și așteaptă până când release-urile EXE și APK sunt disponibile.
+
 ## Domeniu
 
 Include timeline pe nouă luni și cache SQLite pentru Camere și Camping, actualizare periodică condiționată, creare/editare, redimensionare de la margine, status aprobat/în așteptare, note, gunoi/restaurare, verificarea disponibilității, previzualizări native de preț și avans, schimbarea avansului cu actualizarea automată a restului și cereri de plată prin email, actualizări optimiste locale, cozi sigure la repornire, diagnostic, setări securizate și actualizare prin API. Crearea unei rezervări necesită disponibilitate online și confirmarea prețului; rezervările din cache rămân disponibile offline.
