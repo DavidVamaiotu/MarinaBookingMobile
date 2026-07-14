@@ -19,12 +19,14 @@ for command in git gh node npm; do
 done
 
 [[ $# -le 1 ]] || die "Usage: ./bump [patch|minor|major|X.Y.Z]"
-[[ -z "$(git status --porcelain)" ]] || die "The working tree must be clean before a release."
 [[ "$(git branch --show-current)" == "main" ]] || die "Releases must be created from the main branch."
 [[ "$(git remote get-url origin)" == *"DavidVamaiotu/MarinaBookingDesktop.git" ]] || die "origin does not point to MarinaBookingDesktop."
 [[ "$(git remote get-url mobile)" == *"DavidVamaiotu/MarinaBookingMobile.git" ]] || die "mobile does not point to MarinaBookingMobile."
 
 gh auth status --hostname github.com >/dev/null
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Including the current tracked and untracked changes in this release."
+fi
 git fetch --quiet origin main
 git fetch --quiet mobile main
 HEAD_SHA="$(git rev-parse HEAD)"
@@ -95,7 +97,7 @@ npm run check
 npm test
 git diff --check
 
-git add package.json package-lock.json android/app/build.gradle README.md
+git add -A
 git commit -m "Release $NEXT_VERSION"
 RELEASE_SHA="$(git rev-parse HEAD)"
 git push origin HEAD:main

@@ -11,7 +11,8 @@ const bump = readFileSync(bumpPath, "utf8");
 
 test("bump is executable and guards the dual-repository release", () => {
   assert.ok(statSync(bumpPath).mode & 0o111);
-  assert.match(bump, /working tree must be clean/i);
+  assert.match(bump, /Including the current tracked and untracked changes/);
+  assert.match(bump, /git add -A/);
   assert.match(bump, /origin\/main/);
   assert.match(bump, /mobile\/main/);
   assert.match(bump, /npm version/);
