@@ -42,7 +42,7 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .timeline-scale .timeline-day.is-past{background:#fcfcfb}
 .timeline-scale .timeline-day.is-past strong,.timeline-scale .timeline-day.is-past small{color:#b8bfbb}
 .timeline-scale .timeline-day.is-today{background:#edf8f1;box-shadow:inset 0 -2px 0 #70b989}
-.timeline-scale .timeline-day.is-month-start{color:inherit;box-shadow:inset 1px 0 0 #9fcbb0}
+.timeline-scale .timeline-day.is-month-start{color:inherit;box-shadow:inset 3px 0 0 #d64545}
 .timeline-scale .timeline-corner,.timeline-unit{position:sticky;left:0;background:#fff}
 .timeline-scale{z-index:40}
 .timeline-scale .timeline-corner{z-index:41}
@@ -50,7 +50,7 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .guest-timeline.is-virtualized{display:block}
 .guest-timeline.is-virtualized .timeline-row{position:absolute;top:var(--timeline-row-top);left:0;height:var(--timeline-row-height)}
 .timeline-row{position:relative;grid-template-rows:repeat(var(--timeline-lanes,1),minmax(34px,auto));min-height:calc((var(--timeline-lanes,1) * 34px) + 8px);background-color:#fff;background-image:repeating-linear-gradient(90deg,transparent 0,transparent calc(var(--timeline-day-width) - 1px),#edf1ee calc(var(--timeline-day-width) - 1px),#edf1ee var(--timeline-day-width));background-position-x:var(--timeline-unit-width);border:0;border-bottom:1px solid #dce5df;border-radius:0}
-.timeline-row::before{content:"";position:absolute;inset:4px 0 4px var(--timeline-unit-width);z-index:0;background-image:var(--timeline-date-grid);background-repeat:repeat-y;background-position:left top;background-size:var(--timeline-date-grid-width) 34px;pointer-events:none}
+.timeline-row::before{content:"";position:absolute;inset:0 0 -1px var(--timeline-unit-width);z-index:0;background-image:var(--timeline-date-grid);background-repeat:repeat-y;background-position:left 4px;background-size:var(--timeline-date-grid-width) 34px;pointer-events:none}
 .timeline-row.is-empty{background-color:#fbfcfb}
 .timeline-row.is-drop-target{outline:2px solid rgba(112,185,137,.55);outline-offset:-2px}
 .timeline-unit{z-index:30;display:grid;gap:0;grid-column:1;grid-row:1/-1;align-self:stretch;align-content:center;padding:6px 12px;border-right:1px solid #cbd8d0}

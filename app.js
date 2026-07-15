@@ -741,6 +741,7 @@ function updateDateGridBackground() {
   const rowHeight = LANE_HEIGHT;
   const width = dayCount * dayWidth;
   const today = todayIso();
+  const monthLines = [];
   const cells = Array.from({ length: dayCount }, (_, index) => {
     const date = addDays(windowStart, index);
     const value = iso(date);
@@ -753,9 +754,10 @@ function updateDateGridBackground() {
       ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#edf8f1"/>`
       : past ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fcfcfb"/>`
         : weekend ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fffafa"/>` : "";
+    if (addDays(date, 1).getUTCMonth() !== date.getUTCMonth()) monthLines.push(`<line x1="${x + dayWidth}" y1="0" x2="${x + dayWidth}" y2="${rowHeight}" stroke="#d64545" stroke-width="3"/>`);
     return `${background}<text x="${x + dayWidth / 2}" y="${rowHeight / 2 + 3}" text-anchor="middle" fill="${fill}" font-family="Arial,sans-serif" font-size="10" font-weight="600">${String(date.getUTCDate()).padStart(2, "0")}</text>`;
   }).join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rowHeight}" viewBox="0 0 ${width} ${rowHeight}">${cells}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rowHeight}" viewBox="0 0 ${width} ${rowHeight}">${cells}${monthLines.join("")}</svg>`;
   timelineShell.style.setProperty("--timeline-date-grid", `url("data:image/svg+xml;base64,${window.btoa(svg)}")`);
   timelineShell.style.setProperty("--timeline-date-grid-width", `${width}px`);
 }

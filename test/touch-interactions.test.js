@@ -92,7 +92,8 @@ test("high resolution horizontal scrolling preserves the full trackpad delta", (
 test("each stacked reservation lane receives its own compact date strip", () => {
   const dateGridSource = appSource.slice(appSource.indexOf("function updateDateGridBackground"), appSource.indexOf("function assignLanes"));
   assert.match(dateGridSource, /const rowHeight = LANE_HEIGHT/);
-  assert.match(stylesSource, /\.timeline-row::before\{[^}]*inset:4px 0 4px var\(--timeline-unit-width\)[^}]*background-repeat:repeat-y[^}]*background-size:var\(--timeline-date-grid-width\) 34px/);
+  assert.match(dateGridSource, /\$\{cells\}\$\{monthLines\.join\(""\)\}/);
+  assert.match(stylesSource, /\.timeline-row::before\{[^}]*inset:0 0 -1px var\(--timeline-unit-width\)[^}]*background-repeat:repeat-y[^}]*background-position:left 4px[^}]*background-size:var\(--timeline-date-grid-width\) 34px/);
   assert.match(stylesSource, /\.guest-timeline\{display:grid;align-content:start/);
 });
 
