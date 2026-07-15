@@ -56,6 +56,7 @@
       <button id="bookingMenuEdit" type="button" title="Editează rezervarea"><span aria-hidden="true">✎</span>Editează</button>
       <button id="bookingMenuStatus" type="button" title="Schimbă statusul aprobării"><span aria-hidden="true">✓</span><span class="action-label">Aprobă</span></button>
       <button id="bookingMenuTrash" type="button" title="Mută rezervarea la gunoi"><span aria-hidden="true">⌫</span><span class="action-label">Gunoi</span></button>
+      <button id="bookingMenuDuplicate" type="button" title="Duplică rezervarea într-un alt spațiu"><span aria-hidden="true">⧉</span>Duplică</button>
       <div class="booking-payment-menu">
         <button class="booking-payment-menu-toggle" id="bookingPaymentMenuToggle" type="button" aria-label="Mai multe acțiuni de plată" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">⋯</span>Plată</button>
         <div class="booking-payment-dropdown" id="bookingPaymentMenu" role="menu" hidden>
@@ -179,6 +180,18 @@
       <input name="note" type="hidden">
       <input name="approved" type="checkbox" hidden>
       <footer><button class="secondary" id="cancelCreateDialog" type="button">Anulează</button><button class="primary" id="createSubmit" type="submit" disabled>Adaugă rezervarea</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="duplicateDialog" aria-labelledby="duplicateDialogTitle">
+    <form id="duplicateForm" class="panel-form" method="dialog">
+      <header><div><p>Duplicare client și rezervare</p><h2 id="duplicateDialogTitle">Selectați alt spațiu</h2></div><button class="icon" id="closeDuplicateDialog" type="button" aria-label="Închide">×</button></header>
+      <p id="duplicateSummary" class="availability"></p>
+      <label>Spațiul pentru rezervarea duplicată
+        <select name="resourceId" required></select>
+      </label>
+      <p class="availability">Clientul, perioada, statusul, nota și toate câmpurile rezervării vor fi copiate. Rezervarea originală rămâne neschimbată.</p>
+      <footer><button class="secondary" id="cancelDuplicateDialog" type="button">Anulează</button><button class="primary" id="duplicateSubmit" type="submit">Duplică rezervarea</button></footer>
     </form>
   </dialog>
 

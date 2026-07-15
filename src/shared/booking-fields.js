@@ -124,6 +124,33 @@
     return prepared;
   }
 
+  function duplicateBookingInput(booking, targetResource) {
+    const sourceResourceId = Number(booking?.resourceId);
+    const targetResourceId = Number(targetResource?.id);
+    if (!Number.isInteger(sourceResourceId) || sourceResourceId <= 0) {
+      throw Object.assign(new TypeError("Rezervarea sursă nu are un spațiu valid."), { code: "invalid_source_resource", permanent: true });
+    }
+    if (!Number.isInteger(targetResourceId) || targetResourceId <= 0 || targetResource?.active === false) {
+      throw Object.assign(new TypeError("Selectați un spațiu activ pentru duplicare."), { code: "invalid_target_resource", permanent: true });
+    }
+    if (sourceResourceId === targetResourceId) {
+      throw Object.assign(new TypeError("Rezervarea duplicată trebuie alocată unui alt spațiu."), { code: "duplicate_same_resource", permanent: true });
+    }
+    const dates = Array.isArray(booking?.dates) ? booking.dates.map((date) => String(date)) : [];
+    if (!dates.length) {
+      throw Object.assign(new TypeError("Rezervarea sursă nu are date valide."), { code: "invalid_duplicate_dates", permanent: true });
+    }
+    return {
+      resourceId: targetResourceId,
+      dates,
+      formData: prepareFormData(booking.formData, sourceResourceId),
+      bookingFormType: String(targetResource.defaultForm || ""),
+      note: String(booking.note || ""),
+      approved: booking.status === "approved",
+      sendEmail: false
+    };
+  }
+
   function isDetailsField(name, field = {}) {
     if (matchesName(name, "details")) return true;
     return /^(textarea|multiline|textareafield)$/.test(normalizeName(field?.type));
@@ -136,5 +163,5 @@
     return String(match?.[1]?.value ?? "").trim();
   }
 
-  return { GROUPS, MAX_FORM_FIELDS, assign, detailsValue, entries, entry, isDetailsField, matchesName, normalizeName, prepareFormData, value, withoutResourceSuffix };
+  return { GROUPS, MAX_FORM_FIELDS, assign, detailsValue, duplicateBookingInput, entries, entry, isDetailsField, matchesName, normalizeName, prepareFormData, value, withoutResourceSuffix };
 });

@@ -93,7 +93,11 @@ test("each stacked reservation lane receives its own compact date strip", () => 
   const dateGridSource = appSource.slice(appSource.indexOf("function updateDateGridBackground"), appSource.indexOf("function assignLanes"));
   assert.match(dateGridSource, /const rowHeight = LANE_HEIGHT/);
   assert.match(dateGridSource, /\$\{cells\}\$\{monthLines\.join\(""\)\}/);
-  assert.match(stylesSource, /\.timeline-row::before\{[^}]*inset:0 0 -1px var\(--timeline-unit-width\)[^}]*background-repeat:repeat-y[^}]*background-position:left 4px[^}]*background-size:var\(--timeline-date-grid-width\) 34px/);
+  assert.match(appSource, /const DATE_GRID_CHUNK_DAYS = 28/);
+  assert.match(dateGridSource, /start \+ DATE_GRID_CHUNK_DAYS/);
+  assert.match(dateGridSource, /--timeline-date-grid-position/);
+  assert.match(dateGridSource, /--timeline-date-grid-size/);
+  assert.match(stylesSource, /\.timeline-row::before\{[^}]*inset:0 0 -1px var\(--timeline-unit-width\)[^}]*background-repeat:repeat-y[^}]*background-position:var\(--timeline-date-grid-position\)[^}]*background-size:var\(--timeline-date-grid-size\)/);
   assert.match(stylesSource, /\.guest-timeline\{display:grid;align-content:start/);
 });
 

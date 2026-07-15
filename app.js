@@ -10,6 +10,7 @@ const bookingMenu = $("#bookingMenu");
 const detailsPanel = $("#detailsPanel");
 const paymentDialog = $("#paymentDialog");
 const createDialog = $("#createDialog");
+const duplicateDialog = $("#duplicateDialog");
 const settingsDialog = $("#settingsDialog");
 const diagnostics = $("#diagnostics");
 
@@ -27,6 +28,7 @@ const PINCH_DIRECTION_THRESHOLD = 8;
 const CAMERA_PAN_THRESHOLD = 4;
 const ROW_BASE = 44;
 const LANE_HEIGHT = 34;
+const DATE_GRID_CHUNK_DAYS = 28;
 const ROW_GAP = 1;
 const VIRTUAL_THRESHOLD = 60;
 const OVERSCAN = 10;
@@ -35,6 +37,8 @@ const DEFAULT_TIMEZONE = "Europe/Bucharest";
 let state = { resources: [], bookings: [], commands: [], diagnostics: {}, settings: {}, range: null };
 let activeWorkspace = "rooms";
 let workspaceSwitchId = 0;
+let duplicateBookingId = null;
+let duplicateWorkspace = null;
 
 function updateWorkspaceUi() {
   const camping = activeWorkspace === "camping";
@@ -57,6 +61,7 @@ async function switchWorkspace(source) {
   availabilityRequestId += 1;
   quoteRequestId += 1;
   if (createDialog.open) createDialog.close();
+  if (duplicateDialog.open) duplicateDialog.close();
   if (paymentDialog.open) paymentDialog.close();
   if (settingsDialog.open) settingsDialog.close();
   settingsWorkspace = null;
@@ -739,27 +744,39 @@ function renderScale() {
 
 function updateDateGridBackground() {
   const rowHeight = LANE_HEIGHT;
-  const width = dayCount * dayWidth;
   const today = todayIso();
-  const monthLines = [];
-  const cells = Array.from({ length: dayCount }, (_, index) => {
-    const date = addDays(windowStart, index);
-    const value = iso(date);
-    const x = index * dayWidth;
-    const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
-    const past = value < today;
-    const current = value === today;
-    const fill = past ? "#b8bfbb" : weekend ? "#a7443f" : current ? "#2f7045" : "#4b5563";
-    const background = current
-      ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#edf8f1"/>`
-      : past ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fcfcfb"/>`
-        : weekend ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fffafa"/>` : "";
-    if (addDays(date, 1).getUTCMonth() !== date.getUTCMonth()) monthLines.push(`<line x1="${x + dayWidth}" y1="0" x2="${x + dayWidth}" y2="${rowHeight}" stroke="#d64545" stroke-width="3"/>`);
-    return `${background}<text x="${x + dayWidth / 2}" y="${rowHeight / 2 + 3}" text-anchor="middle" fill="${fill}" font-family="Arial,sans-serif" font-size="10" font-weight="600">${String(date.getUTCDate()).padStart(2, "0")}</text>`;
-  }).join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rowHeight}" viewBox="0 0 ${width} ${rowHeight}">${cells}${monthLines.join("")}</svg>`;
-  timelineShell.style.setProperty("--timeline-date-grid", `url("data:image/svg+xml;base64,${window.btoa(svg)}")`);
-  timelineShell.style.setProperty("--timeline-date-grid-width", `${width}px`);
+  const grids = [];
+  const positions = [];
+  const sizes = [];
+  for (let start = 0; start < dayCount;) {
+    let end = Math.min(dayCount, start + DATE_GRID_CHUNK_DAYS);
+    if (end < dayCount && addDays(windowStart, end).getUTCDate() === 1) end -= 1;
+    const monthLines = [];
+    const cells = Array.from({ length: end - start }, (_, offset) => {
+      const date = addDays(windowStart, start + offset);
+      const value = iso(date);
+      const x = offset * dayWidth;
+      const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+      const past = value < today;
+      const current = value === today;
+      const fill = past ? "#b8bfbb" : weekend ? "#a7443f" : current ? "#2f7045" : "#4b5563";
+      const background = current
+        ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#edf8f1"/>`
+        : past ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fcfcfb"/>`
+          : weekend ? `<rect x="${x}" y="0" width="${dayWidth}" height="${rowHeight}" fill="#fffafa"/>` : "";
+      if (addDays(date, 1).getUTCMonth() !== date.getUTCMonth()) monthLines.push(`<line x1="${x + dayWidth}" y1="0" x2="${x + dayWidth}" y2="${rowHeight}" stroke="#d64545" stroke-width="3"/>`);
+      return `${background}<text x="${x + dayWidth / 2}" y="${rowHeight / 2 + 3}" text-anchor="middle" fill="${fill}" font-family="Arial,sans-serif" font-size="10" font-weight="600">${String(date.getUTCDate()).padStart(2, "0")}</text>`;
+    }).join("");
+    const width = (end - start) * dayWidth;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rowHeight}" viewBox="0 0 ${width} ${rowHeight}">${cells}${monthLines.join("")}</svg>`;
+    grids.push(`url("data:image/svg+xml;base64,${window.btoa(svg)}")`);
+    positions.push(`${start * dayWidth}px 4px`);
+    sizes.push(`${width}px ${rowHeight}px`);
+    start = end;
+  }
+  timelineShell.style.setProperty("--timeline-date-grid", grids.join(","));
+  timelineShell.style.setProperty("--timeline-date-grid-position", positions.join(","));
+  timelineShell.style.setProperty("--timeline-date-grid-size", sizes.join(","));
 }
 
 function assignLanes(items) {
@@ -1339,6 +1356,23 @@ function openCreate({ resourceId, date } = {}) {
   }
 }
 
+function openDuplicate(booking) {
+  const resources = state.resources.filter((resource) => resource.active !== false && Number(resource.id) !== Number(booking.resourceId));
+  if (!resources.length) {
+    showError(new Error("Nu există un alt spațiu activ pentru această rezervare."));
+    return;
+  }
+  duplicateBookingId = booking.localId;
+  duplicateWorkspace = activeWorkspace;
+  dismissBookingMenu();
+  const form = $("#duplicateForm");
+  form.elements.resourceId.innerHTML = resources.map((resource) => `<option value="${resource.id}">${escapeHtml(resource.title)}</option>`).join("");
+  const sourceResource = resourceById(booking.resourceId);
+  $("#duplicateSummary").textContent = `${sourceResource?.title || `Spațiul ${booking.resourceId}`} · ${formatMenuDate(booking.dates[0])} → ${formatMenuDate(booking.dates.at(-1))}`;
+  duplicateDialog.showModal();
+  form.elements.resourceId.focus();
+}
+
 function formBookingInput(form) {
   return {
     resourceId: Number(form.elements.resourceId.value),
@@ -1646,6 +1680,7 @@ function closeBookingOverlays() {
 
 function dismissTopLayer() {
   if (settingsDialog.open) { settingsWorkspace = null; settingsDialog.close(); return true; }
+  if (duplicateDialog.open) { duplicateDialog.close(); return true; }
   if (createDialog.open) { createDialog.close(); return true; }
   if (paymentDialog.open) { paymentDialog.close(); selectedBookingId = null; selectedBookingView = ""; return true; }
   if (!bookingMenu.hidden) { dismissBookingMenu(); return true; }
@@ -2220,6 +2255,41 @@ $("#sendPaymentRequest").addEventListener("click", async () => {
 $("#bookingMenuEdit").addEventListener("click", () => {
   const booking = bookingById(selectedBookingId);
   if (booking) populateDetails(booking);
+});
+
+$("#bookingMenuDuplicate").addEventListener("click", () => {
+  const booking = bookingById(selectedBookingId);
+  if (booking) openDuplicate(booking);
+});
+
+$("#closeDuplicateDialog").addEventListener("click", () => duplicateDialog.close());
+$("#cancelDuplicateDialog").addEventListener("click", () => duplicateDialog.close());
+duplicateDialog.addEventListener("close", () => {
+  duplicateBookingId = null;
+  duplicateWorkspace = null;
+});
+$("#duplicateForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const booking = bookingById(duplicateBookingId);
+  const source = duplicateWorkspace;
+  if (!booking || source !== activeWorkspace) {
+    showError(new Error("Rezervarea sursă nu mai este disponibilă."));
+    duplicateDialog.close();
+    return;
+  }
+  const resource = resourceById(event.currentTarget.elements.resourceId.value);
+  let input;
+  try {
+    input = { ...BookingFields.duplicateBookingInput(booking, resource), source };
+  } catch (error) {
+    showError(error);
+    return;
+  }
+  await runExclusive(`create:${source}`, [$("#duplicateSubmit")], async () => { try {
+    duplicateDialog.close();
+    const created = await runApiAction("createBooking", input);
+    await waitForCreatedBooking(created, input, source);
+  } catch (error) { showError(error); } });
 });
 
 $("#bookingPaymentMenuToggle").addEventListener("click", () => {
