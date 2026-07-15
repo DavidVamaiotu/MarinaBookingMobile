@@ -45,6 +45,7 @@ test("availability page stays separate from the reservation timeline controls an
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
   const css = fs.readFileSync(path.join(root, "styles.css"), "utf8");
+  const mobileBuild = fs.readFileSync(path.join(root, "scripts", "build-mobile-web.js"), "utf8");
   assert.match(html, /id="openAvailability"/);
   assert.match(html, /id="availabilityPage"[^>]*hidden/);
   assert.match(html, /id="availabilityPrev"/);
@@ -57,5 +58,6 @@ test("availability page stays separate from the reservation timeline controls an
   assert.match(app, /cameraViewport\.hidden = availabilityViewActive/);
   assert.match(app, /availabilityPage\.hidden = !availabilityViewActive/);
   assert.match(css, /\.availability-grid\{[^}]*overflow-x:hidden/);
+  assert.match(mobileBuild, /availability-timeline\.js/);
   assert.doesNotMatch(app, /availabilityGrid\.addEventListener\("(?:pointerdown|dblclick)"/);
 });
