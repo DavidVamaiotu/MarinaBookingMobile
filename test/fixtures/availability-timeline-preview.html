@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Availability timeline preview</title>
+  <link rel="stylesheet" href="../../styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="toolbar">
+      <div class="brand"><div><strong>Marina Booking</strong><span>Date sintetice</span></div></div>
+      <button class="secondary" id="previewToggle" type="button">Calendar rezervări</button>
+    </header>
+    <section class="timeline-panel" aria-labelledby="availabilityTitle">
+      <div id="previewExisting" class="empty-state" hidden>Calendarul existent</div>
+      <section class="availability-page" id="availabilityPage" aria-labelledby="availabilityTitle">
+        <header class="availability-header">
+          <div><p>Vizualizare lunară</p><h1 id="availabilityTitle">Disponibilitate camere</h1></div>
+          <div class="availability-actions">
+            <span class="availability-legend"><i></i>Ocupat</span>
+            <button id="availabilityPrev" type="button" aria-label="Luna precedentă">‹</button>
+            <strong id="availabilityMonthLabel"></strong>
+            <button id="availabilityNext" type="button" aria-label="Luna următoare">›</button>
+          </div>
+        </header>
+        <div class="availability-grid" id="availabilityGrid" role="table"></div>
+      </section>
+    </section>
+  </main>
+  <script src="../../src/shared/booking-calendar.js"></script>
+  <script src="../../src/shared/availability-timeline.js"></script>
+  <script src="availability-timeline-preview.js"></script>
+</body>
+</html>

@@ -6,6 +6,11 @@ const cameraContent = $("#cameraContent");
 const timelineShell = $("#timelineShell");
 const timelineScale = $("#timelineScale");
 const guestTimeline = $("#guestTimeline");
+const timelinePanel = document.querySelector(".timeline-panel");
+const timelineHeader = $("#timelineHeader");
+const availabilityPage = $("#availabilityPage");
+const availabilityGrid = $("#availabilityGrid");
+const openAvailability = $("#openAvailability");
 const bookingMenu = $("#bookingMenu");
 const detailsPanel = $("#detailsPanel");
 const paymentDialog = $("#paymentDialog");
@@ -39,10 +44,15 @@ let activeWorkspace = "rooms";
 let workspaceSwitchId = 0;
 let duplicateBookingId = null;
 let duplicateWorkspace = null;
+let availabilityMonth = monthStart(todayIso());
+let availabilityViewActive = false;
+let availabilityVisited = false;
 
 function updateWorkspaceUi() {
   const camping = activeWorkspace === "camping";
+  if (camping && availabilityViewActive) setAvailabilityView(false);
   timelineShell.classList.toggle("is-camping-workspace", camping);
+  openAvailability.hidden = camping;
   document.querySelectorAll("[data-workspace]").forEach((button) => {
     const active = button.dataset.workspace === activeWorkspace;
     button.classList.toggle("is-active", active);
@@ -977,6 +987,64 @@ function renderTimeline({ preserveScroll = true } = {}) {
   if (preserveScroll) { timelineShell.scrollLeft = left; timelineShell.scrollTop = top; lastScrollLeft = left; }
 }
 
+function availabilityCellLabel(cell) {
+  const am = cell.am !== "available";
+  const pm = cell.pm !== "available";
+  if (am && pm) return `${cell.date}, ocupat`;
+  if (am) return `${cell.date}, ocupat dimineața`;
+  if (pm) return `${cell.date}, ocupat după-amiaza`;
+  return `${cell.date}, disponibil`;
+}
+
+function renderAvailabilityTimeline() {
+  if (!availabilityViewActive) return;
+  const view = AvailabilityTimeline.buildMonth(state.resources, state.bookings, availabilityMonth);
+  const weekdayInitials = ["D", "L", "M", "M", "J", "V", "S"];
+  availabilityGrid.style.setProperty("--availability-days", view.dates.length);
+  $("#availabilityMonthLabel").textContent = formatMonth(availabilityMonth);
+  const header = `<div class="availability-corner" role="columnheader">Cameră</div><div class="availability-month" role="columnheader">${escapeHtml(formatMonth(availabilityMonth))}</div>`;
+  const rows = view.rows.map((row) => `<div class="availability-room" role="rowheader">${escapeHtml(row.title)}</div>${view.dates.map((date) => `<div class="availability-date-number" role="cell" aria-label="Ziua ${date.day}">${date.day}</div>`).join("")}${row.cells.map((cell, index) => {
+    const am = cell.am === "available" ? "available" : "occupied";
+    const pm = cell.pm === "available" ? "available" : "occupied";
+    return `<div class="availability-cell" role="cell" data-date="${cell.date}" data-am="${am}" data-pm="${pm}" aria-label="${escapeHtml(availabilityCellLabel(cell))}"><span aria-hidden="true">${weekdayInitials[view.dates[index].weekday]}</span></div>`;
+  }).join("")}`).join("");
+  availabilityGrid.innerHTML = view.rows.length ? header + rows : `${header}<p class="empty-state">Nu există camere în cache.</p>`;
+}
+
+function setAvailabilityView(show) {
+  const wasActive = availabilityViewActive;
+  availabilityViewActive = Boolean(show) && activeWorkspace === "rooms";
+  if (availabilityViewActive && !availabilityVisited) {
+    availabilityMonth = monthStart(focusMonth);
+    availabilityVisited = true;
+  }
+  timelineHeader.hidden = availabilityViewActive;
+  cameraViewport.hidden = availabilityViewActive;
+  availabilityPage.hidden = !availabilityViewActive;
+  timelinePanel.setAttribute("aria-labelledby", availabilityViewActive ? "availabilityTitle" : "timelineTitle");
+  openAvailability.setAttribute("aria-pressed", String(availabilityViewActive));
+  if (availabilityViewActive) {
+    closeBookingOverlays();
+    renderAvailabilityTimeline();
+  } else if (wasActive) {
+    setVisibleMonth(availabilityMonth);
+  } else {
+    renderTimeline();
+  }
+}
+
+async function setAvailabilityMonth(month) {
+  availabilityMonth = monthStart(month);
+  renderAvailabilityTimeline();
+  const targetEnd = addDays(addMonths(availabilityMonth, 1), -1);
+  currentRange();
+  if (availabilityMonth >= windowStart && targetEnd <= windowEnd) return;
+  windowStart = addMonths(availabilityMonth, -Math.floor(TIMELINE_WINDOW_MONTHS / 2));
+  currentRange();
+  await refreshRange({ force: false, quiet: false });
+  renderAvailabilityTimeline();
+}
+
 function renderCommands() {
   const failedCount = state.commands.filter((command) => command.status === "failed").length;
   const commandHtml = (command, compact = false) => {
@@ -1002,6 +1070,7 @@ function applyState(next) {
   updateTrashedToggle();
   updateSyncUi();
   renderTimeline();
+  renderAvailabilityTimeline();
   renderCommands();
   if (createDialog.open) renderCreateCalendar();
   if (selectedBookingId) {
@@ -2059,6 +2128,10 @@ document.querySelector(".workspace-tabs").addEventListener("click", (event) => {
   const tab = event.target.closest("[data-workspace]");
   if (tab) void switchWorkspace(tab.dataset.workspace);
 });
+openAvailability.addEventListener("click", () => setAvailabilityView(!availabilityViewActive));
+$("#closeAvailability").addEventListener("click", () => setAvailabilityView(false));
+$("#availabilityPrev").addEventListener("click", () => { void setAvailabilityMonth(addMonths(availabilityMonth, -1)); });
+$("#availabilityNext").addEventListener("click", () => { void setAvailabilityMonth(addMonths(availabilityMonth, 1)); });
 $("#openCreate").addEventListener("click", () => openCreate());
 createDialog.addEventListener("close", () => {
   clearTimeout(availabilityTimer);
