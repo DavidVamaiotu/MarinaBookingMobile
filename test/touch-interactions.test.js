@@ -138,7 +138,7 @@ test("client popup uses viewport-safe positioning on phone and Fold widths", () 
   const positionSource = appSource.slice(appSource.indexOf("function positionBookingMenu"), appSource.indexOf("function openBookingMenu"));
   assert.match(positionSource, /matchMedia\("\(max-width: 900px\)"\)/);
   assert.match(appSource, /function prepareBookingMenuPosition\(\) \{[\s\S]*bookingMenu\.style\.position = "fixed"/);
-  assert.match(positionSource, /Math\.min\(mobile \? 320 : 342, window\.innerWidth - margin \* 2\)/);
+  assert.match(positionSource, /Math\.min\(mobile \? 360 : 342, window\.innerWidth - margin \* 2\)/);
   assert.match(positionSource, /bookingMenu\.style\.width = `\$\{targetWidth\}px`/);
   assert.match(positionSource, /bookingMenu\.style\.maxHeight = `\$\{targetMaxHeight\}px`/);
   assert.match(positionSource, /anchorRect\.bottom \+ 7/);
