@@ -1753,7 +1753,7 @@ function prepareBookingMenuPosition() {
 
 function positionBookingMenu(anchorRect) {
   prepareBookingMenuPosition();
-  const mobile = window.matchMedia("(max-width: 900px)").matches;
+  const mobile = document.documentElement.classList.contains("is-mobile-app") || window.matchMedia("(max-width: 900px)").matches;
   const margin = mobile ? 6 : 10;
   const targetWidth = Math.min(mobile ? 360 : 342, window.innerWidth - margin * 2);
   const targetMaxHeight = Math.min(mobile ? 440 : window.innerHeight - margin * 2, window.innerHeight - margin * 2);

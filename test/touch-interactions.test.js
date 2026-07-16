@@ -155,6 +155,7 @@ test("past timeline days and only the past segment of reservations are faded", (
 
 test("client popup uses viewport-safe positioning on phone and Fold widths", () => {
   const positionSource = appSource.slice(appSource.indexOf("function positionBookingMenu"), appSource.indexOf("function openBookingMenu"));
+  assert.match(positionSource, /document\.documentElement\.classList\.contains\("is-mobile-app"\)/);
   assert.match(positionSource, /matchMedia\("\(max-width: 900px\)"\)/);
   assert.match(appSource, /function prepareBookingMenuPosition\(\) \{[\s\S]*bookingMenu\.style\.position = "fixed"/);
   assert.match(positionSource, /Math\.min\(mobile \? 360 : 342, window\.innerWidth - margin \* 2\)/);
