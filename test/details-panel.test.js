@@ -31,7 +31,9 @@ test("reservation editor price summary is read-only and follows the existing not
 });
 
 test("reservation editor reference styling remains scoped and responsive", () => {
-  assert.match(stylesSource, /#detailsPanel\{width:min\(448px,46vw\)/);
+  assert.match(stylesSource, /#detailsPanel\{width:min\(580px,60vw\)/);
+  assert.match(stylesSource, /#detailsPanel \.panel-form input,[^}]*font-size:14\.5px/);
+  assert.match(stylesSource, /#detailsPanel \.panel-form input,#detailsPanel \.panel-form select\{height:44px/);
   assert.match(stylesSource, /#detailsPanel \.details-section\{[^}]*border:1px solid #e2dfd8[^}]*border-radius:8px/);
   assert.match(stylesSource, /#detailsPanel \.field-grid\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(stylesSource, /@media\(max-width:620px\)\{[\s\S]*#detailsPanel\{inset:0;width:100vw/);

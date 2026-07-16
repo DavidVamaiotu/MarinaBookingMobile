@@ -107,7 +107,7 @@ class CommandQueue extends EventEmitter {
         if (!serverId) throw Object.assign(new Error("Crearea a reușit fără un ID de rezervare."), { code: "invalid_create_response", unknownOutcome: true });
         this.database.markCreateSynced(command, serverId, response.payload);
       } else {
-        this.database.markCommand(command.id, "synced", { result: response.payload });
+        this.database.markCommandSynced(command, response.payload);
       }
       this.database.setMeta("lastSuccessfulSync", new Date().toISOString());
       this.database.setMeta("online", "true");
@@ -146,13 +146,13 @@ class CommandQueue extends EventEmitter {
         return;
       }
     }
-    if (["deposit_update", "payment_request"].includes(command.type) && error.unknownOutcome) {
+    if (error.unknownOutcome && command.idempotency_key) {
       const attempt = Number(command.attempts || 0) + 1;
-      this.database.markCommand(command.id, "queued", { code: error.code || "payment_outcome_unknown", message: "Rezultatul operației de plată este necunoscut; se reîncearcă folosind aceeași cheie de idempotență.", availableAt: new Date(Date.now() + backoffDelay(attempt, this.random)).toISOString() });
+      this.database.markCommand(command.id, "queued", { code: error.code || "write_outcome_unknown", message: "Rezultatul operației este necunoscut; se reîncearcă folosind aceeași cheie de idempotență.", availableAt: new Date(Date.now() + backoffDelay(attempt, this.random)).toISOString() });
       this.database.setMeta("online", "false");
       return;
     }
-    if (error.conflict || error.status === 409 || (error.status === 404 && command.type !== "create")) {
+    if (!error.temporary && (error.conflict || error.status === 409 || (error.status === 404 && command.type !== "create"))) {
       this.database.markCommand(command.id, "conflict", { code: error.code || "conflict", message: error.message, result: error.payload });
       return;
     }

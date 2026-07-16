@@ -117,6 +117,35 @@ test("unknown create with reliable external-id miss retries the same command key
   db.close();
 });
 
+test("unknown outcomes for ordinary idempotent writes retry the same command key", async () => {
+  const db = new BookingDatabase(":memory:");
+  const booking = db.upsertRemoteBooking({ serverId: 46, resourceId: 4, dates: ["2026-07-20"], status: "pending", note: "", formData: {} });
+  db.optimisticUpdate(booking.localId, { note: "Retry safely" }, "note");
+  const command = db.readyCommands()[0];
+  const api = { note: async () => { throw Object.assign(new Error("timeout"), { code: "timeout_unknown", unknownOutcome: true }); } };
+  const queue = new CommandQueue({ database: db, api, random: () => 0, skipAvailabilityChecks: true });
+  await queue.execute(command);
+  const stored = db.getCommand(command.id);
+  assert.equal(stored.status, "queued");
+  assert.equal(stored.idempotency_key, command.idempotency_key);
+  assert.equal(stored.error_code, "timeout_unknown");
+  db.close();
+});
+
+test("an idempotency reservation still in progress remains queued instead of becoming a conflict", async () => {
+  const db = new BookingDatabase(":memory:");
+  const booking = db.upsertRemoteBooking({ serverId: 47, resourceId: 4, dates: ["2026-07-20"], status: "pending", note: "", formData: {} });
+  db.optimisticUpdate(booking.localId, { note: "Wait for prior request" }, "note");
+  const command = db.readyCommands()[0];
+  const api = { note: async () => { throw Object.assign(new Error("În curs"), { code: "marina_booking_api_request_in_progress", status: 409, temporary: true, retryAfter: 2 }); } };
+  const queue = new CommandQueue({ database: db, api, skipAvailabilityChecks: true });
+  await queue.execute(command);
+  const stored = db.getCommand(command.id);
+  assert.equal(stored.status, "queued");
+  assert.equal(stored.error_code, "marina_booking_api_request_in_progress");
+  db.close();
+});
+
 test("authentication failure pauses the queue and credential recovery requeues it", async () => {
   const db = new BookingDatabase(":memory:");
   create(db);

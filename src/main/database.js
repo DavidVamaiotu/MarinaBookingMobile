@@ -21,6 +21,12 @@ function json(value, fallback = null) {
   }
 }
 
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
+}
+
 function datesFromRange(start, end) {
   const dates = [];
   const cursor = new Date(`${start}T00:00:00Z`);
@@ -360,11 +366,19 @@ class BookingDatabase {
       ? this.db.prepare("SELECT local_id,sync_state FROM bookings WHERE server_id=? OR external_id=? ORDER BY CASE WHEN server_id=? THEN 0 ELSE 1 END LIMIT 1").get(serverId, booking.externalId, serverId)
       : this.db.prepare("SELECT local_id,sync_state FROM bookings WHERE server_id=?").get(serverId);
     if (existing && existing.sync_state !== "synced") {
-      const overlay = this.db.prepare("SELECT base_json FROM optimistic_overlays WHERE booking_local_id=?").get(existing.local_id);
+      const overlay = this.db.prepare("SELECT base_json,remote_shadow_json FROM optimistic_overlays WHERE booking_local_id=?").get(existing.local_id);
       const base = json(overlay?.base_json);
-      this.db.prepare("UPDATE optimistic_overlays SET remote_shadow_json=?,updated_at=? WHERE booking_local_id=?").run(JSON.stringify(booking), now(), existing.local_id);
-      const comparable = (value) => value ? JSON.stringify({ resourceId: Number(value.resourceId), dates: value.dates || [], status: value.status || "pending", trashed: Boolean(value.trashed), note: value.note || "", formData: value.formData || {} }) : "";
-      if (base && comparable(base) !== comparable(booking)) this.markBookingConflict(existing.local_id, "remote_changed", "Rezervarea de pe server s-a schimbat în timp ce existau modificări locale în așteptare.", booking);
+      const previousRemote = json(overlay?.remote_shadow_json);
+      const comparable = (value) => value ? JSON.stringify(canonicalValue({ resourceId: Number(value.resourceId), dates: value.dates || [], status: value.status || "pending", trashed: Boolean(value.trashed), note: value.note || "", formData: value.formData || {} })) : "";
+      const previousRemoteTime = Date.parse(previousRemote?.serverUpdatedAt || "");
+      const incomingRemoteTime = Date.parse(booking.serverUpdatedAt || "");
+      const remoteIsNotNewer = !Number.isFinite(previousRemoteTime) || !Number.isFinite(incomingRemoteTime) || incomingRemoteTime <= previousRemoteTime;
+      const remoteMatchesKnownStaleState = previousRemote && comparable(previousRemote) === comparable(booking) && remoteIsNotNewer;
+      if (base && comparable(base) !== comparable(booking) && !remoteMatchesKnownStaleState) {
+        this.markBookingConflict(existing.local_id, "remote_changed", "Rezervarea de pe server s-a schimbat în timp ce existau modificări locale în așteptare.", booking);
+      } else if (!remoteMatchesKnownStaleState) {
+        this.db.prepare("UPDATE optimistic_overlays SET remote_shadow_json=?,updated_at=? WHERE booking_local_id=?").run(JSON.stringify(booking), now(), existing.local_id);
+      }
       return this.bookingRow(existing.local_id);
     }
     return this.transaction(() => this.writeBooking({ ...booking, localId: existing?.local_id || `server:${serverId}`, syncState: "synced" }));
@@ -488,7 +502,10 @@ class BookingDatabase {
         const dependency = this.db.prepare("SELECT status FROM commands WHERE id=?").get(candidate.depends_on_command_id);
         if (dependency?.status !== "synced") return false;
       }
-      return !this.db.prepare(`SELECT 1 FROM commands WHERE rowid<>? AND (created_at<? OR (created_at=? AND rowid<?)) AND status IN (${ACTIVE_COMMAND_STATES.map(() => "?").join(",")}) AND ((booking_local_id IS NOT NULL AND booking_local_id=?) OR (resource_id IS NOT NULL AND resource_id=?)) LIMIT 1`).get(candidate.queue_order, candidate.created_at, candidate.created_at, candidate.queue_order, ...ACTIVE_COMMAND_STATES, candidate.booking_local_id, candidate.resource_id);
+      const earlier = "rowid<>? AND (created_at<? OR (created_at=? AND rowid<?))";
+      const sameBookingBlocked = this.db.prepare(`SELECT 1 FROM commands WHERE ${earlier} AND status IN (${ACTIVE_COMMAND_STATES.map(() => "?").join(",")}) AND booking_local_id IS NOT NULL AND booking_local_id=? LIMIT 1`).get(candidate.queue_order, candidate.created_at, candidate.created_at, candidate.queue_order, ...ACTIVE_COMMAND_STATES, candidate.booking_local_id);
+      if (sameBookingBlocked) return false;
+      return !this.db.prepare(`SELECT 1 FROM commands WHERE ${earlier} AND status IN ('queued','sending') AND resource_id IS NOT NULL AND resource_id=? LIMIT 1`).get(candidate.queue_order, candidate.created_at, candidate.created_at, candidate.queue_order, candidate.resource_id);
     });
   }
 
@@ -502,6 +519,31 @@ class BookingDatabase {
     const command = this.getCommand(id);
     if (status !== "synced" && code) this.db.prepare("INSERT INTO sync_errors(command_id,booking_local_id,code,message,details_json,created_at) VALUES(?,?,?,?,?,?)").run(id, command?.booking_local_id || null, code, message || code, result ? JSON.stringify(result) : null, timestamp);
     if (command?.booking_local_id) this.refreshBookingSyncState(command.booking_local_id);
+  }
+
+  markCommandSynced(command, result) {
+    this.transaction(() => {
+      if (command.booking_local_id) {
+        const row = this.db.prepare("SELECT base_json,remote_shadow_json FROM optimistic_overlays WHERE booking_local_id=?").get(command.booking_local_id);
+        const base = json(row?.base_json);
+        if (base) {
+          const nextBase = { ...base };
+          if (command.type === "status") nextBase.status = command.payload.status;
+          else if (command.type === "note") nextBase.note = command.payload.note;
+          else if (command.type === "trash") nextBase.trashed = Boolean(command.payload.trash);
+          else if (command.type === "edit") {
+            nextBase.resourceId = Number(command.payload.resource_id);
+            nextBase.dates = (command.payload.dates || []).map((value) => String(value).slice(0, 10));
+            nextBase.formData = command.payload.form_data || {};
+            if (command.payload.note !== undefined) nextBase.note = command.payload.note;
+          } else if (command.type === "deposit_update") {
+            nextBase.note = result?.note || PricingNote.update(command.payload.expected_note, command.payload.deposit, command.payload.total).note;
+          }
+          this.db.prepare("UPDATE optimistic_overlays SET base_json=?,remote_shadow_json=COALESCE(remote_shadow_json,?),updated_at=? WHERE booking_local_id=?").run(JSON.stringify(nextBase), JSON.stringify(base), now(), command.booking_local_id);
+        }
+      }
+      this.markCommand(command.id, "synced", { result });
+    });
   }
 
   markCreateSynced(command, serverId, result) {
@@ -523,7 +565,7 @@ class BookingDatabase {
 
   retryCommand(id) {
     const timestamp = now();
-    this.db.prepare("UPDATE commands SET status='queued',api_base_url=COALESCE((SELECT value FROM settings WHERE key='apiBaseUrl'),api_base_url),available_at=?,error_code=NULL,error_message=NULL,dismissed_at=NULL,updated_at=? WHERE id=? AND status IN ('failed','conflict','needs_attention')").run(timestamp, timestamp, id);
+    this.db.prepare("UPDATE commands SET status='queued',available_at=?,error_code=NULL,error_message=NULL,dismissed_at=NULL,updated_at=? WHERE id=? AND status IN ('failed','conflict','needs_attention')").run(timestamp, timestamp, id);
   }
 
   dismissFailedCommands() {

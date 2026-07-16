@@ -11,7 +11,7 @@ const htmlSource = fs.readFileSync(path.join(root, "index.html"), "utf8");
 
 test("queue menu explicitly confirms discarding failed local work", () => {
   assert.match(htmlSource, /id="clearQueueIssues"[^>]*hidden>Anulează modificările eșuate<\/button>/);
-  assert.match(appSource, /failedCount = state\.commands\.filter\(\(command\) => command\.status === "failed"\)\.length/);
+  assert.match(appSource, /clearableStatuses = window\.marina\.platform === "android" \? \["failed", "conflict", "needs_attention"\] : \["failed"\]/);
   assert.match(appSource, /confirm\("Anulezi modificările locale eșuate și comenzile care depind de ele\?/);
   assert.match(appSource, /runApiAction\("clearFailedCommands"\)/);
 });

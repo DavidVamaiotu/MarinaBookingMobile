@@ -18,7 +18,7 @@ public class BackgroundQueuePlugin extends Plugin {
             );
             call.resolve();
         } catch (RuntimeException error) {
-            call.reject("Nu s-a putut porni sincronizarea în fundal.", error);
+            call.reject("Nu s-a putut porni sincronizarea în fundal.", "background_service_unavailable", error);
         }
     }
 

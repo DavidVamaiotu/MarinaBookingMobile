@@ -224,6 +224,9 @@ class BookingService extends EventEmitter {
 
   retry(commandId) {
     const command = this.database.getCommand(commandId);
+    if (command?.error_code === "endpoint_changed" && command.api_base_url !== this.database.getSettings().apiBaseUrl) {
+      throw Object.assign(new Error("Comanda aparține vechii adrese API. Revino la acea adresă pentru reîncercare sau anulează modificarea locală."), { code: "endpoint_changed", permanent: true });
+    }
     this.database.retryCommand(commandId);
     if (command?.error_code === "endpoint_changed") this.queue.resumeAfterCredentials({ retryFailed: false });
     else this.queue.schedule(0);

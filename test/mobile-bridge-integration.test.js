@@ -300,6 +300,79 @@ test("mobile recovers an interrupted sending deposit with its original idempoten
   releaseRequest(jsonResponse({ booking_id: 89, note: "Cost total: 100 RON, Depozit: 40 RON, Rest: 60 RON" }));
 });
 
+test("mobile recovers an interrupted ordinary mutation with its pinned endpoint and idempotency key", async () => {
+  let releaseRequest;
+  let markStarted;
+  const interrupted = new Promise((resolve) => { releaseRequest = resolve; });
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const first = await configuredBridge(async (url) => {
+    if (url.endsWith("/bookings/55/note")) { markStarted(); return interrupted; }
+    throw new Error(`Unexpected synthetic request: ${url}`);
+  });
+  const pending = first.marina.setNote("server:55", { note: "Durable" });
+  await started;
+  let state;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    state = await first.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  } while (state.commands[0]?.status !== "sending");
+  const original = state.commands[0];
+
+  const retries = [];
+  const second = bridgeHarness(async (url, options = {}) => {
+    if (url.endsWith("/bookings/55/note")) { retries.push({ url, key: options.headers["Idempotency-Key"] }); return jsonResponse({ ok: true }); }
+    if (url.endsWith("/resources")) return jsonResponse({ resources: [] });
+    if (url.includes("/bookings?")) return jsonResponse({ bookings: [] });
+    throw new Error(`Unexpected synthetic request: ${url}`);
+  }, first.localStorage);
+  await second.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  second.dispatchWindow("online");
+  for (let attempt = 0; attempt < 100 && !retries.length; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(retries.length, 1, JSON.stringify((await second.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" })).commands));
+  assert.equal(retries[0].url, "https://example.test/wp-json/marina-booking/v1/bookings/55/note");
+  assert.equal(retries[0].key, original.idempotencyKey);
+  assert.equal(original.apiBaseUrl, "https://example.test/wp-json/marina-booking/v1");
+  releaseRequest(jsonResponse({ ok: true }));
+  await pending;
+});
+
+test("mobile endpoint changes quarantine in-flight work and never retarget retries", async () => {
+  let releaseRequest;
+  let markStarted;
+  const interrupted = new Promise((resolve) => { releaseRequest = resolve; });
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const urls = [];
+  const harness = await configuredBridge(async (url) => {
+    urls.push(url);
+    if (url.endsWith("/bookings/55/note")) { markStarted(); return interrupted; }
+    throw new Error(`Unexpected synthetic request: ${url}`);
+  });
+  const pending = harness.marina.setNote("server:55", { note: "Pinned" });
+  await started;
+  await harness.marina.saveSettings({ apiBaseUrl: "https://changed.example.test", username: "api-user", timezone: "Europe/Bucharest" });
+  releaseRequest(jsonResponse({ ok: true }));
+  await assert.rejects(pending, (error) => error.code === "endpoint_changed");
+  const state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  const action = state.commands[0];
+  assert.equal(action.status, "needs_attention");
+  assert.equal(action.apiBaseUrl, "https://example.test/wp-json/marina-booking/v1");
+  await assert.rejects(harness.marina.retryCommand(action.id), (error) => error.code === "endpoint_changed");
+  assert.equal(urls.filter((url) => url.includes("changed.example.test")).length, 0);
+});
+
+test("mobile retries WordPress idempotency reservations still in progress with the same key", async () => {
+  const keys = [];
+  const harness = await configuredBridge(async (url, options = {}) => {
+    if (!url.endsWith("/bookings/55/note")) throw new Error(`Unexpected synthetic request: ${url}`);
+    keys.push(options.headers["Idempotency-Key"]);
+    if (keys.length === 1) return jsonResponse({ code: "marina_booking_api_request_in_progress", message: "În curs.", data: { status: 409, retry_after: 0 } }, 409, { "Retry-After": "0" });
+    return jsonResponse({ ok: true });
+  });
+  await harness.marina.setNote("server:55", { note: "Retry" });
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+});
+
 test("mobile Camping create delegates capacity allocation to WordPress", async () => {
   const requests = [];
   let created = false;

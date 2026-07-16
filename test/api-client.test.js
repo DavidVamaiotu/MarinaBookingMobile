@@ -132,6 +132,19 @@ test("HTTP 200 WordPress error envelopes fail closed with authentication diagnos
   );
 });
 
+test("WordPress idempotency reservations still in progress are retryable", async () => {
+  const client = new MarinaApiClient({
+    getConfig: async () => ({ apiBaseUrl: "https://example.com", username: "api", password: "secret" }),
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      headers: new Headers(),
+      text: async () => JSON.stringify({ code: "marina_booking_api_request_in_progress", message: "În curs.", data: { status: 409, retry_after: 2 } })
+    })
+  });
+  await assert.rejects(client.note(7, { note: "Test" }, "note-key"), (error) => error.code === "marina_booking_api_request_in_progress" && error.temporary === true && error.permanent === false && error.retryAfter === 2);
+});
+
 test("malformed and empty HTTP 200 mutation responses are never treated as synchronized", async () => {
   const bodies = ["<html>proxy failure</html>", ""];
   const client = new MarinaApiClient({

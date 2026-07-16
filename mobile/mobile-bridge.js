@@ -21,12 +21,15 @@ if (!window.marina) {
   const PASSWORD_PREFIX = "marina-password-";
   const callbacks = new Set();
   const mutationChains = new Map();
+  const locallyOwnedActions = new Set();
   const inFlightCreates = new Map();
   const refreshOperations = new Map();
   const paymentQueuePumps = new Map();
-  const paymentQueuesRecovered = new Set();
+  const actionQueuesRecovered = new Set();
+  const actionQueueTimers = new Map();
   const sourceConnections = new Map();
   let actionHistoryWrite = Promise.resolve();
+  const jsonWrites = new Map();
   let backgroundQueueActivities = 0;
   let backgroundQueueTransition = Promise.resolve();
   const MOBILE_REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -106,6 +109,20 @@ if (!window.marina) {
     await Preferences.set({ key, value: JSON.stringify(value) });
   }
 
+  function mutateJson(key, fallback, update) {
+    const previous = jsonWrites.get(key) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(async () => {
+      const value = await readJson(key, fallback);
+      const result = await update(value);
+      await writeJson(key, value);
+      return result;
+    });
+    jsonWrites.set(key, operation);
+    return operation.finally(() => {
+      if (jsonWrites.get(key) === operation) jsonWrites.delete(key);
+    });
+  }
+
   async function allSettings() { return readJson(SETTINGS_KEY, defaultSettings); }
   async function allCache() { return readJson(CACHE_KEY, defaultCache); }
   async function allActionHistory() { return readJson(ACTION_HISTORY_KEY, defaultActionHistory); }
@@ -115,9 +132,10 @@ if (!window.marina) {
     const operation = actionHistoryWrite.catch(() => {}).then(async () => {
       const history = await allActionHistory();
       const items = [...(history[source] || [])];
-      history[source] = update(items)
-        .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
-        .slice(0, ACTION_HISTORY_LIMIT);
+      const updated = update(items).sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+      const active = updated.filter((item) => ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status));
+      const completed = updated.filter((item) => !["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status)).slice(0, ACTION_HISTORY_LIMIT);
+      history[source] = [...active, ...completed].sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
       await writeJson(ACTION_HISTORY_KEY, history);
       return history[source];
     });
@@ -141,7 +159,7 @@ if (!window.marina) {
     await emitCurrentState(source);
   }
 
-  async function trackedMutation({ source, key, type, bookingLocalId = null, resourceId = null, payload = {} }, task) {
+  async function trackedMutation({ source, key, type, bookingLocalId = null, resourceId = null, payload = {}, apiBaseUrl, idempotencyKey, editIntent = null, noteIdempotencyKey = null, signature = null }, task) {
     if (bookingLocalId) {
       let actions = (await allActionHistory())[source] || [];
       if (actions.some((item) => item.bookingLocalId === bookingLocalId && ["deposit_update", "payment_request"].includes(item.type) && ["queued", "sending"].includes(item.status))) {
@@ -161,8 +179,14 @@ if (!window.marina) {
       bookingLocalId,
       resourceId,
       payload: canonicalValue(payload),
+      apiBaseUrl: normalizeBaseUrl(apiBaseUrl),
+      idempotencyKey: idempotencyKey || null,
+      noteIdempotencyKey,
+      signature,
+      editIntent: canonicalValue(editIntent),
       status: "queued",
       attempts: 0,
+      availableAt: timestamp,
       result: null,
       errorCode: null,
       errorMessage: null,
@@ -170,6 +194,9 @@ if (!window.marina) {
       updatedAt: timestamp,
       completedAt: null
     };
+    action.idempotencyKey ||= action.id;
+    if (type === "create") action.noteIdempotencyKey ||= crypto.randomUUID();
+    locallyOwnedActions.add(action.id);
     await addAction(source, action);
     let started = false;
     try {
@@ -177,7 +204,7 @@ if (!window.marina) {
         started = true;
         await updateAction(source, action.id, { status: "sending", attempts: 1, updatedAt: new Date().toISOString() });
         try {
-          const result = await task();
+          const result = await task(action);
           const completedAt = new Date().toISOString();
           await updateAction(source, action.id, {
             bookingLocalId: result?.localId || action.bookingLocalId,
@@ -191,14 +218,18 @@ if (!window.marina) {
           });
           return result;
         } catch (error) {
+          const temporary = !["endpoint_changed", "queue_metadata_missing"].includes(error.code) && (error.temporary || error.rateLimited || error.unknownOutcome);
           const completedAt = new Date().toISOString();
+          const status = temporary ? "queued" : (error.code === "endpoint_changed" ? "needs_attention" : (error.status === 409 || error.conflict ? "conflict" : "failed"));
           await updateAction(source, action.id, {
-            status: "failed",
+            status,
             errorCode: error.code || "request_failed",
             errorMessage: error.message || "Acțiunea nu a putut fi finalizată.",
+            availableAt: temporary ? new Date(Date.now() + retryDelayMs(Number(action.attempts || 0) + 1, error.retryAfter)).toISOString() : action.availableAt,
             updatedAt: completedAt,
-            completedAt
+            completedAt: temporary ? null : completedAt
           });
+          if (temporary) scheduleActionQueue(source, retryDelayMs(Number(action.attempts || 0) + 1, error.retryAfter));
           throw error;
         }
       });
@@ -214,6 +245,8 @@ if (!window.marina) {
         });
       }
       throw error;
+    } finally {
+      locallyOwnedActions.delete(action.id);
     }
   }
 
@@ -266,8 +299,10 @@ if (!window.marina) {
     error.code = code || "api_application_error";
     error.status = status;
     error.auth = status === 401 || status === 403 || /(auth|credential|forbidden|not_logged|cookie|nonce|invalid_username|incorrect_password)/i.test(error.code);
-    error.rateLimited = status === 429;
-    error.temporary = error.rateLimited || status >= 500;
+    const requestInProgress = error.code === "marina_booking_api_request_in_progress";
+    error.rateLimited = status === 429 || requestInProgress;
+    error.retryAfter = payload?.data?.retry_after !== undefined && Number.isFinite(Number(payload.data.retry_after)) ? Number(payload.data.retry_after) : null;
+    error.temporary = requestInProgress || error.rateLimited || status >= 500;
     error.permanent = !error.temporary;
     error.unknownOutcome = method !== "GET" && error.temporary;
     error.payload = payload;
@@ -345,11 +380,14 @@ if (!window.marina) {
           error.code = payload?.code || `http_${response.status}`;
           error.status = response.status;
           error.auth = response.status === 401 || response.status === 403;
-          error.rateLimited = response.status === 429;
-          error.temporary = response.status === 429 || response.status >= 500;
+          const requestInProgress = error.code === "marina_booking_api_request_in_progress";
+          error.rateLimited = response.status === 429 || requestInProgress;
+          error.temporary = requestInProgress || response.status === 429 || response.status >= 500;
           error.unknownOutcome = method !== "GET" && response.status >= 500;
           const retryAfter = responseHeader(response.headers, "Retry-After");
-          error.retryAfter = retryAfter === null ? null : Number(retryAfter);
+          error.retryAfter = retryAfter === null
+            ? (payload?.data?.retry_after !== undefined && Number.isFinite(Number(payload.data.retry_after)) ? Number(payload.data.retry_after) : null)
+            : Number(retryAfter);
           error.payload = payload;
         }
       }
@@ -431,7 +469,8 @@ if (!window.marina) {
         ...emptyDiagnostics(online, authPaused),
         queued: (actions[source] || []).filter((action) => ["queued", "sending"].includes(action.status)).length,
         sending: (actions[source] || []).filter((action) => action.status === "sending").length,
-        failed: (actions[source] || []).filter((action) => action.status === "failed").length,
+        failed: (actions[source] || []).filter((action) => ["failed", "conflict", "needs_attention"].includes(action.status)).length,
+        conflicts: (actions[source] || []).filter((action) => action.status === "conflict").length,
         lastSuccessfulSync: sourceCache.updatedAt || null
       },
       settings: sourceSettings,
@@ -481,7 +520,6 @@ if (!window.marina) {
           fetchBookings(range, source, expectedApiBaseUrl)
         ]);
         if (!Array.isArray(resourcePayload?.resources)) throw new Error("Endpoint-ul resurselor a returnat un format necunoscut.");
-        const cache = await allCache();
         if (generation !== requestGeneration) return configuredState(true, false);
         const resources = resourcePayload.resources.map(normalizeResource);
         const resourceIds = new Set(resources.map((resource) => resource.id));
@@ -493,12 +531,13 @@ if (!window.marina) {
           const booking = scoped.bookings.find((item) => item.localId === action.bookingLocalId);
           if (booking && action.payload?.new_note) booking.note = action.payload.new_note;
         }
-        cache[source] = {
-          resources: scoped.resources,
-          bookings: scoped.bookings,
-          updatedAt: new Date().toISOString()
-        };
-        await writeJson(CACHE_KEY, cache);
+        await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+          cache[source] = {
+            resources: scoped.resources,
+            bookings: scoped.bookings,
+            updatedAt: new Date().toISOString()
+          };
+        });
         rememberConnection(source, true, false);
         const next = await configuredState(true, false);
         emit(next);
@@ -557,25 +596,34 @@ if (!window.marina) {
 
   function transitionBackgroundQueue(operation) {
     backgroundQueueTransition = backgroundQueueTransition
-      .then(operation, operation)
-      .catch((error) => console.error("Background queue service failed:", error));
+      .then(operation, operation);
     return backgroundQueueTransition;
   }
 
   async function runWithBackgroundQueue(task) {
     if (Capacitor.getPlatform() !== "android") return task();
     backgroundQueueActivities += 1;
-    if (backgroundQueueActivities === 1) {
-      await transitionBackgroundQueue(() => BackgroundQueue.start());
-    } else {
-      await backgroundQueueTransition;
+    try {
+      if (backgroundQueueActivities === 1) {
+        await transitionBackgroundQueue(() => BackgroundQueue.start());
+      } else {
+        await backgroundQueueTransition;
+      }
+    } catch (cause) {
+      backgroundQueueActivities = Math.max(0, backgroundQueueActivities - 1);
+      throw Object.assign(new Error("Sincronizarea sigură în fundal nu a putut fi pornită; acțiunea a rămas în coadă."), {
+        code: "background_service_unavailable",
+        temporary: true,
+        cause
+      });
     }
     try {
       return await task();
     } finally {
       backgroundQueueActivities = Math.max(0, backgroundQueueActivities - 1);
       if (backgroundQueueActivities === 0) {
-        await transitionBackgroundQueue(() => backgroundQueueActivities === 0 ? BackgroundQueue.stop() : undefined);
+        try { await transitionBackgroundQueue(() => backgroundQueueActivities === 0 ? BackgroundQueue.stop() : undefined); }
+        catch (error) { console.error("Background queue service stop failed:", error); }
       }
     }
   }
@@ -678,21 +726,10 @@ if (!window.marina) {
   }
 
   async function mutate(id, path, body, source = currentSource) {
-    const range = currentRange;
     const bookingId = serverId(id);
     const type = path === "/status" ? "status" : path === "/note" ? "note" : "trash";
-    return trackedMutation({ source, key: `booking:${source}:${bookingId}`, type, bookingLocalId: id, payload: body }, async () => {
-      const expectedApiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
-      const key = crypto.randomUUID();
-      const { payload } = await request(`/bookings/${bookingId}${path}`, { method: "POST", body, idempotencyKey: key, expectedApiBaseUrl }, null, source);
-      const patch = path === "/status" ? { status: body.status }
-        : path === "/note" ? { note: body.note }
-          : path === "/trash" ? { trashed: body.trash }
-            : {};
-      await updateCachedBooking(source, bookingId, patch);
-      await refreshAfterMutation(source, range);
-      return { ...payload, localId: id };
-    });
+    const apiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
+    return trackedMutation({ source, key: `booking:${source}:${bookingId}`, type, bookingLocalId: id, payload: body, apiBaseUrl }, (action) => executeSimpleAction(source, action));
   }
 
   async function refreshAfterMutation(source, range) {
@@ -701,17 +738,81 @@ if (!window.marina) {
   }
 
   async function updateCachedBooking(source, bookingId, patch) {
-    const cache = await allCache();
-    const sourceCache = cache[source] || defaultCache()[source];
-    const index = (sourceCache.bookings || []).findIndex((booking) => Number(booking.serverId) === Number(bookingId));
-    if (index < 0) return;
-    sourceCache.bookings[index] = { ...sourceCache.bookings[index], ...patch, updatedAt: new Date().toISOString() };
-    cache[source] = sourceCache;
-    await writeJson(CACHE_KEY, cache);
+    const updated = await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+      const sourceCache = cache[source] || defaultCache()[source];
+      const index = (sourceCache.bookings || []).findIndex((booking) => Number(booking.serverId) === Number(bookingId));
+      if (index < 0) return false;
+      sourceCache.bookings[index] = { ...sourceCache.bookings[index], ...patch, updatedAt: new Date().toISOString() };
+      cache[source] = sourceCache;
+      return true;
+    });
+    if (!updated) return;
     if (source === currentSource) {
       const connection = connectionFor(source);
       emit(await configuredState(connection.online, connection.authPaused));
     }
+  }
+
+  async function executeSimpleAction(source, action) {
+    const bookingId = serverId(action.bookingLocalId);
+    const paths = { status: "/status", note: "/note", trash: "/trash" };
+    const path = paths[action.type];
+    if (!path) throw Object.assign(new Error("Tipul acțiunii din coadă nu este recunoscut."), { code: "unsupported_queue_action", permanent: true });
+    const { payload } = await request(`/bookings/${bookingId}${path}`, {
+      method: "POST",
+      body: action.payload,
+      idempotencyKey: action.idempotencyKey,
+      expectedApiBaseUrl: action.apiBaseUrl
+    }, null, source);
+    const patch = action.type === "status" ? { status: action.payload.status }
+      : action.type === "note" ? { note: action.payload.note }
+        : { trashed: action.payload.trash };
+    await updateCachedBooking(source, bookingId, patch);
+    await refreshAfterMutation(source, currentRange);
+    return { ...payload, localId: action.bookingLocalId };
+  }
+
+  async function executeEditAction(source, action) {
+    const bookingId = serverId(action.bookingLocalId);
+    if (!action.editIntent) throw Object.assign(new Error("Editarea salvată nu conține informațiile necesare pentru reluare sigură."), { code: "queue_metadata_missing", permanent: true });
+    const rebasedPatch = await rebaseEditPatch(source, await cachedBooking(source, bookingId), action.payload, action.editIntent);
+    const stayTimes = source === "camping" ? { checkIn: "14:00:01", checkOut: "12:00:02" } : {};
+    const apiDates = window.BookingCalendar.toStayDateTimes(rebasedPatch.dates, stayTimes);
+    await requireAvailability(source, action.apiBaseUrl, rebasedPatch.resourceId, apiDates, bookingId);
+    const editBody = { resource_id: rebasedPatch.resourceId, dates: apiDates, form_data: canonicalValue(rebasedPatch.formData), booking_form_type: rebasedPatch.bookingFormType || "", send_email: Boolean(rebasedPatch.sendEmail) };
+    if (rebasedPatch.note !== undefined) editBody.note = String(rebasedPatch.note);
+    const { payload } = await request(`/bookings/${bookingId}`, {
+      method: "PATCH",
+      idempotencyKey: action.idempotencyKey,
+      expectedApiBaseUrl: action.apiBaseUrl,
+      body: editBody
+    }, null, source);
+    const cachePatch = {
+      resourceId: Number(rebasedPatch.resourceId),
+      dates: rebasedPatch.dates,
+      startDate: rebasedPatch.dates[0] || "",
+      endDate: rebasedPatch.dates.at(-1) || "",
+      formData: canonicalValue(rebasedPatch.formData)
+    };
+    if (rebasedPatch.note !== undefined) cachePatch.note = String(rebasedPatch.note);
+    await updateCachedBooking(source, bookingId, cachePatch);
+    await refreshAfterMutation(source, currentRange);
+    return { ...payload, localId: action.bookingLocalId, resourceId: Number(rebasedPatch.resourceId) };
+  }
+
+  async function executePaymentAction(source, action) {
+    const bookingId = serverId(action.bookingLocalId);
+    const depositAction = action.type === "deposit_update";
+    const path = depositAction ? `/bookings/${bookingId}/deposit` : `/bookings/${bookingId}/payment-request`;
+    const body = depositAction ? { deposit: action.payload.deposit, total: action.payload.total, expected_note: action.payload.expected_note } : PaymentRequest.validate(action.payload);
+    const { payload } = await request(path, {
+      method: depositAction ? "PATCH" : "POST",
+      body,
+      idempotencyKey: action.idempotencyKey,
+      expectedApiBaseUrl: action.apiBaseUrl
+    }, null, source);
+    if (depositAction) await updateCachedBooking(source, bookingId, { note: payload.note || action.payload.new_note });
+    return payload;
   }
 
   async function enqueuePaymentAction(source, booking, type, payload, dependsOnCommandId = null) {
@@ -719,10 +820,48 @@ if (!window.marina) {
     const unresolved = existing.find((item) => item.bookingLocalId === booking.localId && ["failed", "conflict", "needs_attention"].includes(item.status));
     if (unresolved) throw previousMutationError(unresolved);
     const timestamp = new Date().toISOString();
-    const action = { id: crypto.randomUUID(), type, bookingLocalId: booking.localId, resourceId: booking.resourceId, payload: canonicalValue(payload), dependsOnCommandId, status: "queued", attempts: 0, result: null, errorCode: null, errorMessage: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null };
+    const apiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
+    const id = crypto.randomUUID();
+    const action = { id, type, bookingLocalId: booking.localId, resourceId: booking.resourceId, payload: canonicalValue(payload), apiBaseUrl, idempotencyKey: id, dependsOnCommandId, status: "queued", attempts: 0, availableAt: timestamp, result: null, errorCode: null, errorMessage: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null };
     await addAction(source, action);
     void processPaymentQueue(source);
     return action;
+  }
+
+  function scheduleActionQueue(source, delay = 0) {
+    const due = Date.now() + Math.max(0, Number(delay) || 0);
+    const existing = actionQueueTimers.get(source);
+    if (existing && existing.due <= due) return;
+    if (existing) window.clearTimeout(existing.id);
+    const id = window.setTimeout(() => {
+      actionQueueTimers.delete(source);
+      void processPaymentQueue(source);
+    }, Math.max(0, due - Date.now()));
+    actionQueueTimers.set(source, { id, due });
+  }
+
+  function queuedAction(actions, timestamp = Date.now()) {
+    return actions.find((candidate, index) => {
+      if (locallyOwnedActions.has(candidate.id)) return false;
+      if (candidate.status !== "queued" || new Date(candidate.availableAt || candidate.createdAt).getTime() > timestamp) return false;
+      if (candidate.dependsOnCommandId && actions.find((item) => item.id === candidate.dependsOnCommandId)?.status !== "synced") return false;
+      if (candidate.bookingLocalId && actions.slice(0, index).some((item) => item.id !== candidate.id
+        && item.bookingLocalId === candidate.bookingLocalId
+        && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status)
+      )) return false;
+      return true;
+    });
+  }
+
+  async function recoverActionQueue(source) {
+    if (actionQueuesRecovered.has(source)) return;
+    actionQueuesRecovered.add(source);
+    await updateActionHistory(source, (items) => items.map((item) => item.status === "sending"
+      ? (item.apiBaseUrl && item.idempotencyKey
+        ? { ...item, status: "queued", availableAt: new Date().toISOString(), errorCode: "restart_recovery", errorMessage: "Operația întreruptă va fi reluată cu aceeași cheie de idempotență.", updatedAt: new Date().toISOString() }
+        : { ...item, status: "failed", errorCode: "queue_metadata_missing", errorMessage: "Operația veche nu poate fi reluată sigur deoarece nu are ținta API și cheia de idempotență salvate.", updatedAt: new Date().toISOString() })
+      : item));
+    await emitCurrentState(source);
   }
 
   async function processPaymentQueue(source = currentSource) {
@@ -730,42 +869,31 @@ if (!window.marina) {
     const operation = (async () => {
       const settings = (await allSettings())[source];
       if (!settings?.apiBaseUrl || !settings?.username || !await passwordFor(source)) return;
-      if (!paymentQueuesRecovered.has(source)) {
-        await updateActionHistory(source, (items) => items.map((item) => ["deposit_update", "payment_request"].includes(item.type) && item.status === "sending"
-          ? { ...item, status: "queued", errorCode: "restart_recovery", errorMessage: "Operația întreruptă va fi reluată cu aceeași cheie de idempotență.", updatedAt: new Date().toISOString() }
-          : item));
-        paymentQueuesRecovered.add(source);
-        await emitCurrentState(source);
-      }
+      await recoverActionQueue(source);
       while (true) {
         const actions = ((await allActionHistory())[source] || []).slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-        const action = actions.find((candidate) => {
-          if (!["deposit_update", "payment_request"].includes(candidate.type) || candidate.status !== "queued") return false;
-          if (candidate.dependsOnCommandId && actions.find((item) => item.id === candidate.dependsOnCommandId)?.status !== "synced") return false;
-          if (candidate.type === "payment_request" && actions.some((item) => item.type === "deposit_update"
-            && item.bookingLocalId === candidate.bookingLocalId
-            && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status)
-            && String(item.createdAt) <= String(candidate.createdAt))) return false;
-          return true;
-        });
-        if (!action) return;
+        const action = queuedAction(actions);
+        if (!action) {
+          const nextAt = actions.filter((item) => item.status === "queued").map((item) => new Date(item.availableAt || item.createdAt).getTime()).filter((value) => Number.isFinite(value) && value > Date.now()).sort((a, b) => a - b)[0];
+          if (nextAt) scheduleActionQueue(source, nextAt - Date.now());
+          return;
+        }
         let started = false;
         try {
-          await serializeMutation(`booking:${source}:${action.bookingLocalId}`, async () => {
+          const mutationKey = action.bookingLocalId ? `booking:${source}:${action.bookingLocalId}` : `create:${source}`;
+          await serializeMutation(mutationKey, async () => {
             started = true;
             await updateAction(source, action.id, { status: "sending", attempts: Number(action.attempts || 0) + 1, updatedAt: new Date().toISOString() });
             try {
-              const bookingId = serverId(action.bookingLocalId);
-              const depositAction = action.type === "deposit_update";
-              const path = depositAction ? `/bookings/${bookingId}/deposit` : `/bookings/${bookingId}/payment-request`;
-              const body = depositAction ? { deposit: action.payload.deposit, total: action.payload.total, expected_note: action.payload.expected_note } : PaymentRequest.validate(action.payload);
-              const { payload: response } = await request(path, { method: depositAction ? "PATCH" : "POST", body, idempotencyKey: action.id, expectedApiBaseUrl: normalizeBaseUrl(settings.apiBaseUrl) }, null, source);
-              if (depositAction) await updateCachedBooking(source, bookingId, { note: response.note || action.payload.new_note });
+              const response = await executeQueuedAction(source, action);
               const completedAt = new Date().toISOString();
               await updateAction(source, action.id, { status: "synced", result: canonicalValue(response), errorCode: null, errorMessage: null, completedAt, updatedAt: completedAt });
             } catch (error) {
-              const temporary = error.temporary || error.rateLimited || error.unknownOutcome;
-              await updateAction(source, action.id, { status: temporary ? "queued" : (error.status === 409 || error.conflict ? "conflict" : "failed"), errorCode: error.code || "request_failed", errorMessage: error.message || "Acțiunea nu a putut fi finalizată.", updatedAt: new Date().toISOString() });
+              const temporary = !["endpoint_changed", "queue_metadata_missing"].includes(error.code) && (error.temporary || error.rateLimited || error.unknownOutcome);
+              const delay = retryDelayMs(Number(action.attempts || 0) + 1, error.retryAfter);
+              const status = temporary ? "queued" : (error.code === "endpoint_changed" ? "needs_attention" : (error.status === 409 || error.conflict ? "conflict" : "failed"));
+              await updateAction(source, action.id, { status, availableAt: temporary ? new Date(Date.now() + delay).toISOString() : action.availableAt, errorCode: error.code || "request_failed", errorMessage: error.message || "Acțiunea nu a putut fi finalizată.", updatedAt: new Date().toISOString() });
+              if (temporary) scheduleActionQueue(source, delay);
               throw error;
             }
           });
@@ -786,34 +914,38 @@ if (!window.marina) {
     })();
     paymentQueuePumps.set(source, operation);
     try { return await operation; }
-    finally { if (paymentQueuePumps.get(source) === operation) paymentQueuePumps.delete(source); }
+    finally {
+      if (paymentQueuePumps.get(source) === operation) paymentQueuePumps.delete(source);
+      const actions = ((await allActionHistory())[source] || []).slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+      if (queuedAction(actions)) scheduleActionQueue(source, 0);
+    }
   }
 
   async function cacheCreatedBooking(source, bookingId, input) {
-    const cache = await allCache();
-    const sourceCache = cache[source] || defaultCache()[source];
-    const bookings = sourceCache.bookings || [];
-    if (!bookings.some((booking) => Number(booking.serverId) === Number(bookingId))) {
-      const dates = [...new Set(input.dates.map((date) => String(date).slice(0, 10)))].sort();
-      bookings.push({
-        localId: `server:${bookingId}`,
-        serverId: Number(bookingId),
-        externalId: input.externalId,
-        resourceId: Number(input.resourceId),
-        dates,
-        startDate: dates[0] || "",
-        endDate: dates.at(-1) || "",
-        status: input.approved ? "approved" : "pending",
-        trashed: false,
-        note: String(input.note || ""),
-        formData: canonicalValue(input.formData),
-        syncState: "synced",
-        updatedAt: new Date().toISOString()
-      });
-    }
-    sourceCache.bookings = bookings;
-    cache[source] = sourceCache;
-    await writeJson(CACHE_KEY, cache);
+    await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+      const sourceCache = cache[source] || defaultCache()[source];
+      const bookings = sourceCache.bookings || [];
+      if (!bookings.some((booking) => Number(booking.serverId) === Number(bookingId))) {
+        const dates = [...new Set(input.dates.map((date) => String(date).slice(0, 10)))].sort();
+        bookings.push({
+          localId: `server:${bookingId}`,
+          serverId: Number(bookingId),
+          externalId: input.externalId,
+          resourceId: Number(input.resourceId),
+          dates,
+          startDate: dates[0] || "",
+          endDate: dates.at(-1) || "",
+          status: input.approved ? "approved" : "pending",
+          trashed: false,
+          note: String(input.note || ""),
+          formData: canonicalValue(input.formData),
+          syncState: "synced",
+          updatedAt: new Date().toISOString()
+        });
+      }
+      sourceCache.bookings = bookings;
+      cache[source] = sourceCache;
+    });
     if (source === currentSource) emit(await configuredState(true, false));
   }
 
@@ -822,19 +954,19 @@ if (!window.marina) {
   }
 
   async function savePendingCreate(source, pending) {
-    const values = await pendingCreates();
-    const items = values[source] || [];
-    const index = items.findIndex((item) => item.externalId === pending.externalId);
-    if (index >= 0) items[index] = pending;
-    else items.push(pending);
-    values[source] = items;
-    await writeJson(PENDING_CREATES_KEY, values);
+    await mutateJson(PENDING_CREATES_KEY, defaultPendingCreates, (values) => {
+      const items = values[source] || [];
+      const index = items.findIndex((item) => item.externalId === pending.externalId);
+      if (index >= 0) items[index] = pending;
+      else items.push(pending);
+      values[source] = items;
+    });
   }
 
   async function removePendingCreate(source, externalId) {
-    const values = await pendingCreates();
-    values[source] = (values[source] || []).filter((item) => item.externalId !== externalId);
-    await writeJson(PENDING_CREATES_KEY, values);
+    await mutateJson(PENDING_CREATES_KEY, defaultPendingCreates, (values) => {
+      values[source] = (values[source] || []).filter((item) => item.externalId !== externalId);
+    });
   }
 
   async function bookingByExternalId(externalId, source, expectedApiBaseUrl) {
@@ -847,109 +979,107 @@ if (!window.marina) {
     }
   }
 
+  async function executeCreateAction(source, action) {
+    const input = action.payload;
+    const stayTimes = source === "camping" ? { checkIn: "14:00:01", checkOut: "12:00:02" } : {};
+    const dates = window.BookingCalendar.toStayDateTimes(input.dates, stayTimes);
+    const signature = action.signature || createOperationSignature({ source, apiBaseUrl: action.apiBaseUrl, ...input, dates });
+    const existing = (await pendingCreates())[source]?.find((item) => item.signature === signature || item.externalId === action.idempotencyKey);
+    const pending = existing || { signature, externalId: action.idempotencyKey, noteKey: action.noteIdempotencyKey, serverId: null };
+    if (!pending.noteKey) throw Object.assign(new Error("Crearea salvată nu conține cheia necesară pentru nota rezervării."), { code: "queue_metadata_missing", permanent: true });
+    await savePendingCreate(source, pending);
+
+    let payload = {};
+    let booking = pending.serverId ? { serverId: pending.serverId } : null;
+    if (!booking) booking = await bookingByExternalId(pending.externalId, source, action.apiBaseUrl);
+    if (!booking) {
+      await requireAvailability(source, action.apiBaseUrl, input.resourceId, dates);
+      try {
+        ({ payload } = await request("/bookings", {
+          method: "POST",
+          idempotencyKey: pending.externalId,
+          expectedApiBaseUrl: action.apiBaseUrl,
+          retry: false,
+          body: { resource_id: input.resourceId, dates, form_data: canonicalValue(input.formData), booking_form_type: input.bookingFormType || "", approved: Boolean(input.approved), send_email: Boolean(input.sendEmail), external_id: pending.externalId }
+        }, null, source));
+      } catch (error) {
+        try { booking = await bookingByExternalId(pending.externalId, source, action.apiBaseUrl); } catch {}
+        if (!booking) throw error;
+      }
+    }
+    const createdServerId = booking?.serverId || serverIdFromPayload(payload);
+    if (!createdServerId) {
+      booking = await bookingByExternalId(pending.externalId, source, action.apiBaseUrl);
+      if (!booking?.serverId) throw Object.assign(new Error("Crearea a reușit fără un ID de rezervare verificabil."), { code: "invalid_create_response", unknownOutcome: true, temporary: true });
+    }
+    pending.serverId = booking?.serverId || createdServerId;
+    await savePendingCreate(source, pending);
+    await request(`/bookings/${pending.serverId}/note`, { method: "POST", body: { note: String(input.note || "") }, idempotencyKey: pending.noteKey, expectedApiBaseUrl: action.apiBaseUrl }, null, source);
+    await cacheCreatedBooking(source, pending.serverId, { ...input, externalId: pending.externalId });
+    await removePendingCreate(source, pending.externalId);
+    await refreshAfterMutation(source, currentRange);
+    return {
+      localId: `server:${pending.serverId}`,
+      serverId: Number(pending.serverId),
+      resourceId: Number(input.resourceId),
+      dates: [...input.dates],
+      startDate: input.dates[0] || "",
+      endDate: input.dates.at(-1) || ""
+    };
+  }
+
+  function executeQueuedAction(source, action) {
+    if (!action.apiBaseUrl || !action.idempotencyKey) {
+      throw Object.assign(new Error("Acțiunea veche nu conține ținta API și cheia de idempotență necesare pentru reluare sigură."), { code: "queue_metadata_missing", permanent: true });
+    }
+    if (action.type === "create") return executeCreateAction(source, action);
+    if (action.type === "edit") return executeEditAction(source, action);
+    if (["status", "note", "trash"].includes(action.type)) return executeSimpleAction(source, action);
+    if (["deposit_update", "payment_request"].includes(action.type)) return executePaymentAction(source, action);
+    throw Object.assign(new Error("Tipul acțiunii din coadă nu este recunoscut."), { code: "unsupported_queue_action", permanent: true });
+  }
+
   window.marina = Object.freeze({
     platform: "android",
     setSource(source) {
       if (!SOURCES.has(source)) throw new TypeError("Sursa rezervărilor este invalidă.");
       currentSource = source;
       requestGeneration += 1;
+      scheduleActionQueue(source, 0);
     },
     async bootstrap(range) {
       checkForMobileUpdateOnce();
       currentRange = range;
+      await recoverActionQueue(currentSource);
       const connection = connectionFor();
-      return configuredState(connection.online, connection.authPaused);
+      const state = await configuredState(connection.online, connection.authPaused);
+      scheduleActionQueue(currentSource, 0);
+      return state;
     },
     refresh,
     async createBooking(input) {
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
-      const range = currentRange;
       const stayTimes = source === "camping" ? { checkIn: "14:00:01", checkOut: "12:00:02" } : {};
       const dates = window.BookingCalendar.toStayDateTimes(input.dates, stayTimes);
       const apiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
       const signature = createOperationSignature({ source, apiBaseUrl, ...input, dates });
       const inFlight = inFlightCreates.get(signature);
       if (inFlight) return inFlight;
-      const operation = trackedMutation({ source, key: `create:${source}`, type: "create", resourceId: input.resourceId, payload: input }, async () => {
-        const existing = (await pendingCreates())[source]?.find((item) => item.signature === signature);
-        const pending = existing || { signature, externalId: crypto.randomUUID(), noteKey: crypto.randomUUID(), serverId: null };
-        await savePendingCreate(source, pending);
-
-        let payload = {};
-        let booking = pending.serverId ? { serverId: pending.serverId } : null;
-        if (!booking) booking = await bookingByExternalId(pending.externalId, source, apiBaseUrl);
-        if (!booking) {
-          await requireAvailability(source, apiBaseUrl, input.resourceId, dates);
-          try {
-            ({ payload } = await request("/bookings", {
-              method: "POST",
-              idempotencyKey: pending.externalId,
-              expectedApiBaseUrl: apiBaseUrl,
-              retry: false,
-              body: { resource_id: input.resourceId, dates, form_data: canonicalValue(input.formData), booking_form_type: input.bookingFormType || "", approved: Boolean(input.approved), send_email: Boolean(input.sendEmail), external_id: pending.externalId }
-            }, null, source));
-          } catch (error) {
-            try { booking = await bookingByExternalId(pending.externalId, source, apiBaseUrl); } catch {}
-            if (!booking) throw error;
-          }
-        }
-        const createdServerId = booking?.serverId || serverIdFromPayload(payload);
-        if (!createdServerId) {
-          booking = await bookingByExternalId(pending.externalId, source, apiBaseUrl);
-          if (!booking?.serverId) throw new Error("Crearea a reușit fără un ID de rezervare verificabil.");
-        }
-        pending.serverId = booking?.serverId || createdServerId;
-        await savePendingCreate(source, pending);
-        await request(`/bookings/${pending.serverId}/note`, { method: "POST", body: { note: String(input.note || "") }, idempotencyKey: pending.noteKey, expectedApiBaseUrl: apiBaseUrl }, null, source);
-        await cacheCreatedBooking(source, pending.serverId, { ...input, externalId: pending.externalId });
-        await removePendingCreate(source, pending.externalId);
-        await refreshAfterMutation(source, range);
-        return {
-          localId: `server:${pending.serverId}`,
-          serverId: Number(pending.serverId),
-          resourceId: Number(input.resourceId),
-          dates: [...input.dates],
-          startDate: input.dates[0] || "",
-          endDate: input.dates.at(-1) || ""
-        };
-      });
+      const unresolved = ((await allActionHistory())[source] || []).find((item) => item.type === "create" && item.signature === signature && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(item.status));
+      if (unresolved) throw previousMutationError(unresolved);
+      const operation = trackedMutation({ source, key: `create:${source}`, type: "create", resourceId: input.resourceId, payload: input, apiBaseUrl, signature }, (action) => executeCreateAction(source, action));
       inFlightCreates.set(signature, operation);
       try { return await operation; }
       finally { if (inFlightCreates.get(signature) === operation) inFlightCreates.delete(signature); }
     },
     async editBooking(id, patch) {
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
-      const range = currentRange;
       const bookingId = serverId(id);
       const requestedFormData = BookingFields.prepareFormData(patch.formData, patch.sourceResourceId);
-      const editIntent = cachedBooking(source, bookingId).then((baseBooking) => captureEditIntent(baseBooking, patch, requestedFormData));
+      const editIntent = captureEditIntent(await cachedBooking(source, bookingId), patch, requestedFormData);
       const mutationPatch = { ...patch, formData: requestedFormData };
-      return trackedMutation({ source, key: `booking:${source}:${bookingId}`, type: "edit", bookingLocalId: id, resourceId: patch.resourceId, payload: mutationPatch }, async () => {
-        const rebasedPatch = await rebaseEditPatch(source, await cachedBooking(source, bookingId), patch, await editIntent);
-        const expectedApiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
-        const stayTimes = source === "camping" ? { checkIn: "14:00:01", checkOut: "12:00:02" } : {};
-        const apiDates = window.BookingCalendar.toStayDateTimes(rebasedPatch.dates, stayTimes);
-        await requireAvailability(source, expectedApiBaseUrl, rebasedPatch.resourceId, apiDates, bookingId);
-        const editBody = { resource_id: rebasedPatch.resourceId, dates: apiDates, form_data: canonicalValue(rebasedPatch.formData), booking_form_type: rebasedPatch.bookingFormType || "", send_email: Boolean(rebasedPatch.sendEmail) };
-        if (rebasedPatch.note !== undefined) editBody.note = String(rebasedPatch.note);
-        const { payload } = await request(`/bookings/${bookingId}`, {
-          method: "PATCH",
-          idempotencyKey: crypto.randomUUID(),
-          expectedApiBaseUrl,
-          body: editBody
-        }, null, source);
-        const cachePatch = {
-          resourceId: Number(rebasedPatch.resourceId),
-          dates: rebasedPatch.dates,
-          startDate: rebasedPatch.dates[0] || "",
-          endDate: rebasedPatch.dates.at(-1) || "",
-          formData: canonicalValue(rebasedPatch.formData)
-        };
-        if (rebasedPatch.note !== undefined) cachePatch.note = String(rebasedPatch.note);
-        await updateCachedBooking(source, bookingId, cachePatch);
-        await refreshAfterMutation(source, range);
-        return { ...payload, localId: id, resourceId: Number(rebasedPatch.resourceId) };
-      });
+      const apiBaseUrl = normalizeBaseUrl((await allSettings())[source]?.apiBaseUrl);
+      return trackedMutation({ source, key: `booking:${source}:${bookingId}`, type: "edit", bookingLocalId: id, resourceId: patch.resourceId, payload: mutationPatch, apiBaseUrl, editIntent }, (action) => executeEditAction(source, action));
     },
     setStatus: (id, patch) => mutate(id, "/status", { status: patch.status, send_email: Boolean(patch.sendEmail) }, SOURCES.has(patch?.source) ? patch.source : currentSource),
     setNote: (id, patch) => mutate(id, "/note", { note: String(patch.note || "") }, SOURCES.has(patch?.source) ? patch.source : currentSource),
@@ -1011,14 +1141,17 @@ if (!window.marina) {
     async retryCommand(id) {
       const actions = (await allActionHistory())[currentSource] || [];
       const action = actions.find((item) => item.id === id);
-      if (!action || !["deposit_update", "payment_request"].includes(action.type)) throw new Error("Această acțiune nu poate fi reîncercată pe telefon.");
-      await updateAction(currentSource, id, { status: "queued", errorCode: null, errorMessage: null, updatedAt: new Date().toISOString() });
-      void processPaymentQueue(currentSource);
+      if (!action || !["create", "edit", "status", "note", "trash", "deposit_update", "payment_request"].includes(action.type)) throw new Error("Această acțiune nu poate fi reîncercată pe telefon.");
+      if (!action.apiBaseUrl || !action.idempotencyKey) throw Object.assign(new Error("Acțiunea veche nu conține datele necesare pentru o reîncercare sigură."), { code: "queue_metadata_missing", permanent: true });
+      const currentApiBaseUrl = normalizeBaseUrl((await allSettings())[currentSource]?.apiBaseUrl);
+      if (currentApiBaseUrl !== action.apiBaseUrl) throw endpointChangedError("POST");
+      await updateAction(currentSource, id, { status: "queued", availableAt: new Date().toISOString(), errorCode: null, errorMessage: null, completedAt: null, updatedAt: new Date().toISOString() });
+      scheduleActionQueue(currentSource, 0);
     },
     async clearFailedCommands() {
       const source = currentSource;
       const snapshot = (await allActionHistory())[source] || [];
-      const failures = snapshot.filter((item) => item.status === "failed");
+      const failures = snapshot.filter((item) => ["failed", "conflict", "needs_attention"].includes(item.status));
       if (!failures.length) return 0;
       const failedPaymentBookings = [...new Set(failures.filter((item) => ["deposit_update", "payment_request"].includes(item.type)).map((item) => item.bookingLocalId).filter(Boolean))];
       const removedIds = new Set(failures.map((item) => item.id));
@@ -1032,6 +1165,16 @@ if (!window.marina) {
           const originalNote = relevant.filter((item) => item.type === "deposit_update").sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))[0]?.payload?.expected_note;
           if (originalNote !== undefined) await updateCachedBooking(source, serverId(bookingLocalId), { note: originalNote, syncState: "synced" });
         });
+      }
+      const failedBookingIds = [...new Set(failures.map((item) => item.bookingLocalId).filter(Boolean))];
+      for (const bookingLocalId of failedBookingIds) {
+        const actions = (await allActionHistory())[source] || [];
+        for (const action of actions) {
+          if (action.bookingLocalId === bookingLocalId && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(action.status)) removedIds.add(action.id);
+        }
+      }
+      for (const action of failures.filter((item) => item.type === "create")) {
+        if (action.idempotencyKey) await removePendingCreate(source, action.idempotencyKey);
       }
       await updateActionHistory(source, (items) => items.filter((item) => !removedIds.has(item.id)));
       await emitCurrentState(source);
@@ -1061,7 +1204,12 @@ if (!window.marina) {
       if (!settings[source].username) throw new Error("Utilizatorul API este obligatoriu.");
       await writeJson(SETTINGS_KEY, settings);
       if (input.password) await SecureStorage.set(`${PASSWORD_PREFIX}${source}`, String(input.password));
+      const timestamp = new Date().toISOString();
+      await updateActionHistory(source, (items) => items.map((item) => ["queued", "sending"].includes(item.status) && item.apiBaseUrl && item.apiBaseUrl !== settings[source].apiBaseUrl
+        ? { ...item, status: "needs_attention", errorCode: "endpoint_changed", errorMessage: "Adresa API s-a schimbat; acțiunea a rămas legată de ținta inițială.", updatedAt: timestamp }
+        : item));
       quoteCache.clear();
+      scheduleActionQueue(source, 0);
       return { ...settings[source], credentialsConfigured: true };
     },
     async testConnection(input) {
@@ -1086,11 +1234,11 @@ if (!window.marina) {
     if (!isActive) { stopRefreshTimer(); return; }
     startRefreshTimer();
     void refreshIfConfigured({ force: true });
-    void processPaymentQueue(currentSource);
+    scheduleActionQueue(currentSource, 0);
   });
-  window.addEventListener("online", () => { void refreshIfConfigured({ force: true }); void processPaymentQueue(currentSource); });
+  window.addEventListener("online", () => { void refreshIfConfigured({ force: true }); scheduleActionQueue(currentSource, 0); });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) void refreshIfConfigured({ force: true });
+    if (!document.hidden) { void refreshIfConfigured({ force: true }); scheduleActionQueue(currentSource, 0); }
   });
   startRefreshTimer();
   document.documentElement.classList.add("is-mobile-app");

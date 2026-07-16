@@ -93,6 +93,22 @@ test("a successful authenticated refresh resumes the paused queue and requeues a
   database.close();
 });
 
+test("retrying endpoint-quarantined work cannot retarget it to the new site", () => {
+  const database = new BookingDatabase(":memory:");
+  database.saveSettings({ apiBaseUrl: "https://site-a.example/wp-json/marina-booking/v1", username: "a" });
+  const created = database.optimisticCreate({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Fixture", type: "text" } } });
+  database.saveSettings({ apiBaseUrl: "https://site-b.example/wp-json/marina-booking/v1", username: "b" });
+  database.quarantineQueuedCommands();
+  const queue = new EventEmitter();
+  queue.schedule = () => {};
+  queue.resumeAfterCredentials = () => {};
+  const service = new BookingService({ database, api: {}, queue, vault: { hasPassword: () => true } });
+  assert.throws(() => service.retry(created.commandId), (error) => error.code === "endpoint_changed");
+  assert.equal(database.getCommand(created.commandId).status, "needs_attention");
+  assert.equal(database.getCommand(created.commandId).api_base_url, "https://site-a.example/wp-json/marina-booking/v1");
+  database.close();
+});
+
 test("inactive resources remain visible only when referenced by bookings", () => {
   const database = new BookingDatabase(":memory:");
   database.replaceResources([{ id: 4, title: "Active" }, { id: 5, title: "Removed" }]);

@@ -171,17 +171,18 @@ let newlyCreatedBookingId = null;
 let newlyCreatedHighlightTimer = null;
 let createSubmitting = false;
 let settingsWorkspace = null;
-const pendingActions = new Set();
+const pendingActions = new Map();
 
 async function runExclusive(key, controls, action) {
-  if (pendingActions.has(key)) return undefined;
-  pendingActions.add(key);
+  if (pendingActions.has(key)) return pendingActions.get(key);
   const elements = controls.filter(Boolean);
   const previousDisabled = elements.map((element) => element.disabled);
   elements.forEach((element) => { element.disabled = true; });
-  try { return await action(); }
+  const operation = Promise.resolve().then(action);
+  pendingActions.set(key, operation);
+  try { return await operation; }
   finally {
-    pendingActions.delete(key);
+    if (pendingActions.get(key) === operation) pendingActions.delete(key);
     elements.forEach((element, index) => { element.disabled = previousDisabled[index]; });
   }
 }
@@ -1100,9 +1101,10 @@ function cancelAvailabilitySwipe(event) {
 }
 
 function renderCommands() {
-  const failedCount = state.commands.filter((command) => command.status === "failed").length;
+  const clearableStatuses = window.marina.platform === "android" ? ["failed", "conflict", "needs_attention"] : ["failed"];
+  const failedCount = state.commands.filter((command) => clearableStatuses.includes(command.status)).length;
   const commandHtml = (command, compact = false) => {
-    const retryable = ["failed", "conflict", "needs_attention"].includes(command.status) && (window.marina.platform !== "android" || ["deposit_update", "payment_request"].includes(command.type));
+    const retryable = ["failed", "conflict", "needs_attention"].includes(command.status);
     const bookingActions = command.bookingLocalId && window.marina.platform !== "android"
       ? `<button class="secondary compact" data-revert-booking="${escapeHtml(command.bookingLocalId)}" type="button">Revino la local</button><button class="secondary compact" data-open-booking="${escapeHtml(command.bookingLocalId)}" type="button">Deschide detaliile</button>`
       : command.bookingLocalId && ["deposit_update", "payment_request"].includes(command.type)

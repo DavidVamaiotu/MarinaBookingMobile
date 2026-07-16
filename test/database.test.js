@@ -60,7 +60,7 @@ test("startup recovers fields omitted by older normalizers from the stored serve
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
-test("changing API endpoints quarantines queued work until explicitly rebound", () => {
+test("changing API endpoints quarantines queued work without retargeting it", () => {
   const db = new BookingDatabase(":memory:");
   db.saveSettings({ apiBaseUrl: "https://site-a.example/wp-json/marina-booking/v1", username: "a" });
   const created = db.optimisticCreate(input());
@@ -70,7 +70,7 @@ test("changing API endpoints quarantines queued work until explicitly rebound", 
   assert.equal(db.getCommand(created.commandId).status, "needs_attention");
   assert.equal(db.getCommand(created.commandId).error_code, "endpoint_changed");
   db.retryCommand(created.commandId);
-  assert.equal(db.getCommand(created.commandId).api_base_url, "https://site-b.example/wp-json/marina-booking/v1");
+  assert.equal(db.getCommand(created.commandId).api_base_url, "https://site-a.example/wp-json/marina-booking/v1");
   db.close();
 });
 
@@ -165,6 +165,31 @@ test("remote refresh does not overwrite an optimistic overlay", () => {
   db.optimisticUpdate("server:12", { note: "Local note" }, "note");
   db.upsertRemoteBooking({ serverId: 12, resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Remote", type: "text" } }, status: "approved", note: "Old note" });
   assert.equal(db.bookingRow("server:12").note, "Local note");
+  db.close();
+});
+
+test("a refresh does not conflict with an earlier command from the same local queue", () => {
+  const db = new BookingDatabase(":memory:");
+  db.upsertRemoteBooking({ serverId: 12, resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Remote", type: "text" } }, status: "pending", note: "Old note" });
+  db.optimisticUpdate("server:12", { status: "approved" }, "status");
+  db.optimisticUpdate("server:12", { note: "Local note" }, "note");
+  const status = db.readyCommands()[0];
+  db.markCommandSynced(status, { booking_id: 12, status: "approved" });
+  db.upsertRemoteBooking({ serverId: 12, resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Remote", type: "text" } }, status: "pending", note: "Old note" });
+  assert.equal(db.commandRows().find((command) => command.type === "note").status, "queued");
+  db.upsertRemoteBooking({ serverId: 12, resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Remote", type: "text" } }, status: "approved", note: "Old note" });
+  assert.equal(db.commandRows().find((command) => command.type === "note").status, "queued");
+  db.upsertRemoteBooking({ serverId: 12, resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "Remote", type: "text" } }, status: "approved", note: "Changed elsewhere" });
+  assert.equal(db.commandRows().find((command) => command.type === "note").status, "conflict");
+  db.close();
+});
+
+test("failed work blocks its booking but not unrelated bookings on the same resource", () => {
+  const db = new BookingDatabase(":memory:");
+  const first = db.optimisticCreate(input("First"));
+  db.markCommand(first.commandId, "failed", { code: "request_failed", message: "Failed" });
+  const second = db.optimisticCreate(input("Second"));
+  assert.deepEqual(db.readyCommands().map((command) => command.id), [second.commandId]);
   db.close();
 });
 

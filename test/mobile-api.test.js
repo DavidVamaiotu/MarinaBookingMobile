@@ -43,10 +43,10 @@ test("mobile retry backoff is bounded and honors Retry-After", () => {
 
 test("mobile mutations persist create recovery, save notes, and do not fail after refresh", () => {
   assert.match(bridgeSource, /PENDING_CREATES_KEY/);
-  assert.match(bridgeSource, /bookingByExternalId\(pending\.externalId, source, apiBaseUrl\)/);
+  assert.match(bridgeSource, /bookingByExternalId\(pending\.externalId, source, action\.apiBaseUrl\)/);
   assert.match(bridgeSource, /idempotencyKey: pending\.externalId/);
   assert.match(bridgeSource, /bookings\/\$\{pending\.serverId\}\/note/);
-  assert.match(bridgeSource, /await refreshAfterMutation\(source, range\)/);
+  assert.match(bridgeSource, /await refreshAfterMutation\(source, currentRange\)/);
   assert.match(bridgeSource, /if \(generation !== requestGeneration \|\| source !== currentSource\) throw error/);
   assert.match(bridgeSource, /disableRedirects: true/);
   assert.match(bridgeSource, /expectedApiBaseUrl/);

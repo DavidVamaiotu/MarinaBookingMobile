@@ -26,13 +26,15 @@ function applicationError(payload, method) {
   const message = payload.message || payload?.data?.message || payload.error?.message || (typeof payload.error === "string" ? payload.error : "WordPress a respins operația.");
   const errorCode = code || "api_application_error";
   const auth = status === 401 || status === 403 || /(auth|credential|forbidden|not_logged|cookie|nonce|invalid_username|incorrect_password)/i.test(errorCode);
-  const rateLimited = status === 429;
-  const temporary = rateLimited || status >= 500;
+  const requestInProgress = errorCode === "marina_booking_api_request_in_progress";
+  const rateLimited = status === 429 || requestInProgress;
+  const temporary = requestInProgress || rateLimited || status >= 500;
   return new ApiError(message, {
     code: errorCode,
     status,
     auth,
     rateLimited,
+    retryAfter: payload?.data?.retry_after !== undefined && Number.isFinite(Number(payload.data.retry_after)) ? Number(payload.data.retry_after) : null,
     temporary,
     permanent: !temporary,
     unknownOutcome: method !== "GET" && temporary,
@@ -154,14 +156,18 @@ class MarinaApiClient {
       }
       if (!response.ok) {
         const message = payload?.message || payload?.data?.message || `API-ul a returnat HTTP ${response.status}.`;
+        const code = payload?.code || `http_${response.status}`;
+        const requestInProgress = code === "marina_booking_api_request_in_progress";
         throw new ApiError(message, {
-          code: payload?.code || `http_${response.status}`,
+          code,
           status: response.status,
           auth: response.status === 401 || response.status === 403,
-          rateLimited: response.status === 429,
-          retryAfter: Number(response.headers.get("retry-after")) || null,
-          temporary: response.status === 429 || response.status >= 500,
-          permanent: response.status >= 400 && response.status < 500 && response.status !== 429,
+          rateLimited: response.status === 429 || requestInProgress,
+          retryAfter: response.headers.get("retry-after") !== null && Number.isFinite(Number(response.headers.get("retry-after")))
+            ? Number(response.headers.get("retry-after"))
+            : (payload?.data?.retry_after !== undefined && Number.isFinite(Number(payload.data.retry_after)) ? Number(payload.data.retry_after) : null),
+          temporary: requestInProgress || response.status === 429 || response.status >= 500,
+          permanent: !requestInProgress && response.status >= 400 && response.status < 500 && response.status !== 429,
           payload
         });
       }
@@ -185,7 +191,7 @@ class MarinaApiClient {
       if (error instanceof ApiError) throw error;
       const aborted = error?.name === "AbortError";
       if (aborted && !timedOut) throw new ApiError("Cererea a fost anulată.", { code: "request_cancelled", cancelled: true, cause: error });
-      throw new ApiError(timedOut ? "Cererea a expirat; rezultatul pe server este necunoscut." : "API-ul nu poate fi accesat.", { code: timedOut ? "timeout_unknown" : "network_error", temporary: !timedOut, unknownOutcome: timedOut, cause: error });
+      throw new ApiError(timedOut ? "Cererea a expirat; rezultatul pe server este necunoscut." : "API-ul nu poate fi accesat.", { code: timedOut ? "timeout_unknown" : "network_error", temporary: true, unknownOutcome: timedOut, cause: error });
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abortFromCaller);
