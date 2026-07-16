@@ -1761,6 +1761,11 @@ function positionBookingMenu(anchorRect) {
   bookingMenu.style.maxHeight = `${targetMaxHeight}px`;
   const width = bookingMenu.offsetWidth;
   const height = bookingMenu.offsetHeight;
+  if (mobile) {
+    bookingMenu.style.left = `${Math.max(margin, (window.innerWidth - width) / 2)}px`;
+    bookingMenu.style.top = `${Math.max(margin, (window.innerHeight - height) / 2)}px`;
+    return;
+  }
   const left = Math.min(window.innerWidth - width - margin, Math.max(margin, anchorRect.left));
   const below = anchorRect.bottom + 7;
   const above = anchorRect.top - height - 7;

@@ -160,6 +160,7 @@ if (!window.marina) {
   }
 
   async function trackedMutation({ source, key, type, bookingLocalId = null, resourceId = null, payload = {}, apiBaseUrl, idempotencyKey, editIntent = null, noteIdempotencyKey = null, signature = null }, task) {
+    let queuedPredecessor = null;
     if (bookingLocalId) {
       let actions = (await allActionHistory())[source] || [];
       if (actions.some((item) => item.bookingLocalId === bookingLocalId && ["deposit_update", "payment_request"].includes(item.type) && ["queued", "sending"].includes(item.status))) {
@@ -171,6 +172,7 @@ if (!window.marina) {
         || (["deposit_update", "payment_request"].includes(item.type) && ["queued", "sending"].includes(item.status))
       ));
       if (unresolved) throw previousMutationError(unresolved);
+      queuedPredecessor = actions.find((item) => item.bookingLocalId === bookingLocalId && item.status === "queued") || null;
     }
     const timestamp = new Date().toISOString();
     const action = {
@@ -188,6 +190,7 @@ if (!window.marina) {
       attempts: 0,
       availableAt: timestamp,
       result: null,
+      dependsOnCommandId: queuedPredecessor?.id || null,
       errorCode: null,
       errorMessage: null,
       createdAt: timestamp,
@@ -198,6 +201,11 @@ if (!window.marina) {
     if (type === "create") action.noteIdempotencyKey ||= crypto.randomUUID();
     locallyOwnedActions.add(action.id);
     await addAction(source, action);
+    if (queuedPredecessor) {
+      locallyOwnedActions.delete(action.id);
+      scheduleActionQueue(source, 0);
+      return { localId: action.bookingLocalId, resourceId: action.resourceId, commandId: action.id, queued: true };
+    }
     let started = false;
     try {
       return await serializeMutation(key, async () => {
@@ -247,6 +255,7 @@ if (!window.marina) {
       throw error;
     } finally {
       locallyOwnedActions.delete(action.id);
+      scheduleActionQueue(source, 0);
     }
   }
 

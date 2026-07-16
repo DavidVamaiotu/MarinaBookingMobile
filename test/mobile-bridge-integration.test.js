@@ -556,6 +556,42 @@ test("mobile same-client actions never start after an earlier action fails", asy
   assert.equal(statusCalls, 1);
 });
 
+test("mobile retries an older queued action before sending a newer same-client change", async () => {
+  const notes = [];
+  let olderAttempts = 0;
+  const harness = await configuredBridge(async (url, options = {}) => {
+    if (url.endsWith("/bookings/55/note") && options.method === "POST") {
+      const note = JSON.parse(options.body).note;
+      notes.push(note);
+      if (note === "Older" && ++olderAttempts <= 3) {
+        return jsonResponse({ code: "temporary", message: "Încearcă din nou.", data: { status: 503 } }, 503, { "Retry-After": "0.05" });
+      }
+      return jsonResponse({ ok: true });
+    }
+    if (url.endsWith("/resources")) return jsonResponse({ resources: [] });
+    if (url.includes("/bookings?")) return jsonResponse({ bookings: [] });
+    throw new Error(`Unexpected synthetic request: ${url} ${options.method || "GET"}`);
+  });
+
+  await assert.rejects(
+    harness.marina.setNote("server:55", { note: "Older" }),
+    (error) => error.code === "temporary" && error.temporary === true
+  );
+  const newer = await harness.marina.setNote("server:55", { note: "Newer" });
+  assert.equal(newer.queued, true);
+
+  for (let attempt = 0; attempt < 100 && !notes.includes("Newer"); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.deepEqual(notes, ["Older", "Older", "Older", "Older", "Newer"]);
+  const state = await harness.marina.bootstrap({ start: "2026-07-01", end: "2026-07-31" });
+  const ordered = state.commands.filter((command) => ["Older", "Newer"].includes(command.payload?.note)).reverse();
+  assert.equal(ordered[1].dependsOnCommandId, ordered[0].id);
+  assert.equal(ordered[0].status, "synced");
+  assert.equal(ordered[1].status, "synced");
+});
+
 test("mobile action history persists every successful mutation and its lifecycle", async () => {
   const harness = await configuredBridge(async (url, options = {}) => {
     if (url.endsWith("/bookings/55/status") && options.method === "POST") return jsonResponse({ ok: true });
