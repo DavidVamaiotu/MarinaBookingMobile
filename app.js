@@ -1955,7 +1955,7 @@ function renderPaymentSection(booking, reset = false) {
   $("#paymentDepositValue").textContent = amountsAvailable ? `${PricingNote.formatAmount(deposit)} lei` : "—";
   $("#paymentBalanceValue").textContent = amountsAvailable ? `${PricingNote.formatAmount(balance)} lei` : "—";
   $("#paymentBalanceBadge").textContent = amountsAvailable ? `${PricingNote.formatAmount(balance)} lei` : "—";
-  $("#paymentPaidBadge").textContent = deposit > 0 ? "Avans plătit" : "Avans neplătit";
+  $("#paymentPaidBadge").textContent = deposit > 0 ? "Avans" : "Avans neplătit";
   $("#paymentPaidBadge").closest(".payment-badge").classList.toggle("is-unpaid", !(deposit > 0));
   $("#paymentNoteLabel").textContent = serverNoteAvailable ? "Notă WordPress" : "Notă locală";
   $("#paymentNoteText").textContent = note || "Nu există notă.";
