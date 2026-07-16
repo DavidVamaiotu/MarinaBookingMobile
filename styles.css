@@ -360,6 +360,8 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
   .payment-controls{grid-template-columns:1fr;gap:12px}.payment-controls button{width:100%}
 }
 @media(max-width:370px){#paymentForm>header{padding-inline:14px}.payment-section{padding-inline:14px}.payment-verification>div{grid-template-columns:28px minmax(0,1fr);gap:8px}.payment-verification-icon{width:22px;height:22px}}
+.is-mobile-app #paymentDialog{position:fixed;inset:auto;top:50%;left:50%;width:min(610px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:0;border:1px solid #e3e4e1;border-radius:14px;transform:translate(-50%,-50%)}
+.is-mobile-app #paymentForm{min-height:0;height:auto;max-height:calc(100dvh - 24px)}
 
 /* Reference-matched reservation sidebar. Every selector is scoped to the editor. */
 #detailsPanel{width:min(580px,60vw);height:100dvh;padding:0;overflow:hidden;border-left:1px solid #e6e2da;background:#fbfaf7;color:#25312e;box-shadow:-12px 0 36px rgba(38,48,44,.16)}

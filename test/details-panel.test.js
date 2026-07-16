@@ -158,6 +158,7 @@ test("payment popup uses the dedicated responsive advancement layout", () => {
   assert.match(stylesSource, /#paymentDialog::backdrop\{[^}]*backdrop-filter:blur\(5px\)/);
   assert.match(stylesSource, /\.payment-facts\{[^}]*grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
   assert.match(stylesSource, /@media\(max-width:620px\)\{[\s\S]*\.payment-facts\{grid-template-columns:1fr/);
+  assert.match(stylesSource, /\.is-mobile-app #paymentDialog\{[^}]*top:50%;left:50%;[^}]*transform:translate\(-50%,-50%\)/);
   assert.match(appSource, /paymentTotalValue"\)\.textContent = amountsAvailable/);
   assert.match(appSource, /paymentBalanceBadge"\)\.textContent = amountsAvailable/);
 });
