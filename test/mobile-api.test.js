@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingQueryRange, marinaBookingResourceId, marinaCheckoutDate, marinaStayPeriod } = require("../src/shared/mobile-api");
+const { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingIsTrashed, marinaBookingQueryRange, marinaBookingResourceId, marinaCheckoutDate, marinaStayPeriod } = require("../src/shared/mobile-api");
 
 const root = path.join(__dirname, "..");
 const bridgeSource = fs.readFileSync(path.join(root, "mobile", "mobile-bridge.js"), "utf8");
@@ -40,6 +40,14 @@ test("mobile Marina normalizes all booking period shapes and keeps the checkout 
   assert.deepEqual(marinaBookingDates({ id: "booking-segments", segments: [{ resource_id: 31, start_at: "2026-08-19T15:00:01+03:00", end_at: "2026-08-24T12:00:02+03:00" }] }, { bookingMode: "time_slot" }), [
     "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24"
   ]);
+});
+
+test("mobile and desktop classify every Marina trash representation identically", () => {
+  for (const value of [true, 1, "1", "true", "trash", "trashed"]) assert.equal(marinaBookingIsTrashed({ status: "approved", trash: value }), true, String(value));
+  for (const status of ["trash", "cancelled", "canceled", "deleted"]) assert.equal(marinaBookingIsTrashed({ status }), true, status);
+  for (const value of [false, 0, "0", "false"]) assert.equal(marinaBookingIsTrashed({ status: "approved", trash: value }), false, String(value));
+  assert.equal(marinaBookingIsTrashed({ status: "pending" }), false);
+  assert.match(bridgeSource, /trashed: marinaBookingIsTrashed\(booking\)/);
 });
 
 test("mobile resolves and scopes the Rooms and Camping workspaces", () => {
@@ -92,7 +100,7 @@ test("mobile Marina trash actions use cancel and restore status routes", () => {
   assert.match(bridgeSource, /const action = trashed \? "cancel" : "status"/);
   assert.match(bridgeSource, /const status = trashed \? "cancelled" : "pending"/);
   assert.match(bridgeSource, /trashed \? \{ send_email \} : \{ status, send_email \}/);
-  assert.match(bridgeSource, /explicitTrash \|\| \["cancelled", "canceled", "deleted"\]\.includes\(status\)/);
+  assert.match(bridgeSource, /marinaBookingIsTrashed\(booking\)/);
   assert.doesNotMatch(bridgeSource, /marina_restore_unsupported/);
 });
 

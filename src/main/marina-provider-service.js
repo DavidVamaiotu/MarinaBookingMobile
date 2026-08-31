@@ -7,6 +7,7 @@ const { customerFromFormData, fieldValue } = require("../shared/marina-customer"
 const { MANUAL_DEPOSIT_FIELD, normalizeMarinaPayment } = require("../shared/marina-payment");
 const { normalizeMarinaQuote } = require("../shared/marina-quote");
 const { orderMarinaResources } = require("../shared/marina-resource-order");
+const { marinaBookingIsTrashed } = require("../shared/mobile-api");
 const PricingNote = require("../shared/pricing-note");
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
@@ -301,8 +302,6 @@ function normalizeBooking(booking, resources) {
       ? addDays(datePart(flattenedTimedEnd), 1)
       : timedEndDatePart(flattenedTimedEnd) ?? start;
   const status = String(booking.status || "pending").toLowerCase();
-  const trashValue = booking.trash ?? booking.trashed;
-  const explicitTrash = trashValue === true || trashValue === 1 || ["1", "true", "trash", "trashed"].includes(String(trashValue || "").trim().toLowerCase());
   const facilities = normalizeFacilitySnapshots(booking);
   return {
     localId: `marina:${providerId}`,
@@ -314,7 +313,7 @@ function normalizeBooking(booking, resources) {
     resourceId: resource?.id || uiId(providerResourceId),
     status: ["approved", "confirmed", "active", "completed"].includes(status) ? "approved" : "pending",
     providerStatus: status,
-    trashed: explicitTrash || ["trash", "cancelled", "canceled", "deleted"].includes(status),
+    trashed: marinaBookingIsTrashed(booking),
     note: noteText(booking),
     price: booking.price && typeof booking.price === "object" ? { ...booking.price } : null,
     facilities,

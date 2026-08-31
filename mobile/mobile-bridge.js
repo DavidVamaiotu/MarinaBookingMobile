@@ -3,7 +3,7 @@ import { App } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
 import { Preferences } from "@capacitor/preferences";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
-import { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingPeriods, marinaBookingQueryRange, marinaBookingResourceId, marinaStayPeriod } from "../src/shared/mobile-api.js";
+import { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingIsTrashed, marinaBookingPeriods, marinaBookingQueryRange, marinaBookingResourceId, marinaStayPeriod } from "../src/shared/mobile-api.js";
 import { customerFromFormData } from "../src/shared/marina-customer.js";
 import { MANUAL_DEPOSIT_FIELD, normalizeMarinaPayment } from "../src/shared/marina-payment.js";
 import { normalizeMarinaQuote } from "../src/shared/marina-quote.js";
@@ -539,8 +539,6 @@ if (!window.marina) {
     const customer = booking.customer || booking.guest || {};
     const guests = booking.guests || {};
     const status = String(booking.status || "pending").toLowerCase();
-    const trashValue = booking.trash ?? booking.trashed;
-    const explicitTrash = trashValue === true || trashValue === 1 || ["1", "true", "trash", "trashed"].includes(String(trashValue || "").trim().toLowerCase());
     const facilities = marinaFacilitySnapshots(booking);
     return {
       localId: `marina:${providerId}`,
@@ -551,7 +549,7 @@ if (!window.marina) {
       resourceId: marinaUiId(providerResourceId),
       status: ["approved", "confirmed", "active", "completed"].includes(status) ? "approved" : "pending",
       providerStatus: status,
-      trashed: explicitTrash || ["cancelled", "canceled", "deleted"].includes(status),
+      trashed: marinaBookingIsTrashed(booking),
       note: marinaNoteText(booking),
       price: booking.price && typeof booking.price === "object" ? { ...booking.price } : null,
       facilities,

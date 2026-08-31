@@ -120,6 +120,13 @@ function marinaBookingResourceId(booking, periods = marinaBookingPeriods(booking
   return String(booking?.resource_id ?? booking?.resourceId ?? booking?.resource?.id ?? firstPeriod.resource_id ?? firstPeriod.resourceId ?? firstPeriod.resource?.id ?? "");
 }
 
+function marinaBookingIsTrashed(booking) {
+  const status = String(booking?.status || "pending").toLowerCase();
+  const trashValue = booking?.trash ?? booking?.trashed;
+  const explicitTrash = trashValue === true || trashValue === 1 || ["1", "true", "trash", "trashed"].includes(String(trashValue || "").trim().toLowerCase());
+  return explicitTrash || ["trash", "cancelled", "canceled", "deleted"].includes(status);
+}
+
 function marinaBookingDates(booking, resource = {}) {
   const periods = marinaBookingPeriods(booking);
   const bookingMode = String(resource?.bookingMode ?? resource?.booking_mode ?? "date_range");
@@ -205,4 +212,4 @@ function scopeMobileData(resources, bookings, source) {
   return { resources: scopedResources, bookings: scopedBookings };
 }
 
-module.exports = { canonicalValue, createOperationSignature, marinaAvailabilityPeriod, marinaBookingDates, marinaBookingPeriods, marinaBookingQueryRange, marinaBookingResourceId, marinaCheckoutDate, marinaStayPeriod, normalizeMobilePriceQuote, retryDelayMs, scopeMobileData, serverIdFromPayload };
+module.exports = { canonicalValue, createOperationSignature, marinaAvailabilityPeriod, marinaBookingDates, marinaBookingIsTrashed, marinaBookingPeriods, marinaBookingQueryRange, marinaBookingResourceId, marinaCheckoutDate, marinaStayPeriod, normalizeMobilePriceQuote, retryDelayMs, scopeMobileData, serverIdFromPayload };
