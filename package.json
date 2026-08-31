@@ -1,6 +1,6 @@
 {
   "name": "marina-booking-desktop",
-  "version": "1.0.38",
+  "version": "1.0.42",
   "description": "Fast offline-capable Electron manager for Marina Booking API reservations",
   "main": "electron-main.js",
   "author": "Marina Park",
@@ -10,7 +10,6 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "check": "node scripts/check-syntax.js",
-    "wordpress:package": "node scripts/package-wordpress-plugin.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis --x64 --publish never",
     "mobile:web": "node scripts/build-mobile-web.js",

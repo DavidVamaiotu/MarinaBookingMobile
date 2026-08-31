@@ -101,9 +101,10 @@ function normalizeMarinaPayment(payload, { bookingId = null, fallbackNote = "", 
   ]);
   const customFields = objectValue(source.custom_fields) || objectValue(source.customFields) || {};
   const manualDeposit = paymentAmount(null, customFields[MANUAL_DEPOSIT_FIELD]);
-  const deposit = manualDeposit !== null ? manualDeposit : amountFromSources(sources, [
+  const configuredDeposit = amountFromSources(sources, [
     "deposit", "deposit_amount", "depositAmount", "advance", "advance_amount", "advanceAmount", "cost"
   ]);
+  const deposit = manualDeposit !== null ? manualDeposit : configuredDeposit;
   const rawBalance = manualDeposit !== null ? null : amountFromSources(sources, [
     "balance", "remaining", "remaining_amount", "remainingAmount", "amount_due", "amountDue", "due", "rest"
   ]);
@@ -114,6 +115,8 @@ function normalizeMarinaPayment(payload, { bookingId = null, fallbackNote = "", 
       : null;
   if (total !== null) snapshot.total = total;
   if (deposit !== null) snapshot.deposit = deposit;
+  if (manualDeposit !== null) snapshot.manual_deposit = manualDeposit;
+  if (configuredDeposit !== null) snapshot.configured_deposit = configuredDeposit;
   if (balance !== null) snapshot.balance = balance;
   if (snapshot.booking_id === undefined) snapshot.booking_id = snapshot.bookingId ?? snapshot.id ?? bookingId;
   if (typeof snapshot.note !== "string" && typeof snapshot.internal_note === "string") snapshot.note = snapshot.internal_note;
@@ -121,9 +124,9 @@ function normalizeMarinaPayment(payload, { bookingId = null, fallbackNote = "", 
   if (typeof snapshot.note !== "string" && typeof snapshot.remark === "string") snapshot.note = snapshot.remark;
   if (typeof snapshot.note !== "string" && fallbackNote !== undefined) snapshot.note = String(fallbackNote || "");
   if (typeof snapshot.email !== "string" && fallbackEmail) snapshot.email = String(fallbackEmail);
-  // Marina payment-email support is deliberately deferred; keep the shared
-  // popup from enabling the existing WordPress email action for Marina.
-  snapshot.email_available = false;
+  snapshot.email_available = source.email_available !== undefined
+    ? Boolean(source.email_available)
+    : true;
   return snapshot;
 }
 

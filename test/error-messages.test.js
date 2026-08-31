@@ -11,11 +11,11 @@ test("known English API and proxy errors are translated to Romanian", () => {
   );
   assert.equal(
     ErrorMessages.message(new Error("Bad Gateway")),
-    "Serverul WordPress este temporar indisponibil. Încercați din nou."
+    "Serverul Marina este temporar indisponibil. Încercați din nou."
   );
   assert.equal(
     ErrorMessages.message(new Error("Error invoking remote method 'booking:create': Error: Booking not found.")),
-    "Rezervarea nu a fost găsită în WordPress."
+    "Rezervarea nu a fost găsită în Marina."
   );
 });
 
@@ -26,7 +26,7 @@ test("structured API codes are translated even when their message is unknown", (
   );
   assert.equal(
     ErrorMessages.message({ code: "http_503", message: "Unexpected text" }),
-    "Serverul WordPress nu poate fi accesat momentan. Încercați din nou."
+    "Serverul Marina nu poate fi accesat momentan. Încercați din nou."
   );
 });
 

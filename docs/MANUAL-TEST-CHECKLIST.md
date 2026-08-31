@@ -1,20 +1,17 @@
-# Listă de teste manuale
+# Listă de verificare manuală
 
-- [ ] Instalează Marina Booking API v1.0.4, configurează URL-ul, utilizatorul dedicat, parola de aplicație și `Europe/Bucharest`; Testează conexiunea trebuie să returneze numărul de spații.
-- [ ] Creează o rezervare în așteptare cu nume/email/telefon și notă; confirmă că bara locală apare imediat, apoi primește ID de server și starea `sincronizat`.
-- [ ] Trage de corpul barei și confirmă că nu se mută; redimensionează plecarea de la margine și confirmă că editarea se sincronizează ulterior.
-- [ ] Editează câmpurile clientului și datele în panoul lateral; confirmă că schița rămâne vizibilă în timpul sincronizării.
-- [ ] Aprobă rezervarea, apoi pune-o în așteptare; verifică statusul WordPress și culoarea din desktop.
-- [ ] Schimbă nota internă de două ori rapid; verifică faptul că rămâne o singură comandă nesincronizată și că WordPress păstrează nota finală.
-- [ ] Mută rezervarea la gunoi după confirmare; verifică faptul că nu există ștergere definitivă. Restabilește-o și verifică WordPress.
-- [ ] Selectează 22–25 iulie pentru un bungalow de 270 lei/noapte: verifică totalul de 810 lei și avansul de 243 lei; activează patul suplimentar și verifică totalul de 960 lei și avansul de 288 lei. Nu trimite această comparație în producție.
-- [ ] Într-o clonă WordPress izolată, schimbă avansul unei rezervări cu nota `Avans: 243, Cost: 810, Rest: 567`; verifică actualizarea automată a notei și faptul că emailul dependent nu pleacă înaintea comenzii de avans.
-- [ ] Simulează offline, repornire și revenirea conexiunii; verifică păstrarea cheilor de idempotență și un singur email capturat de mailerul de test. Nu folosi adrese de clienți reali.
-- [ ] Schimbă rapid datele și numărul de persoane și verifică stările calculului: `neactualizat`, `se calculează`, `actual`; un răspuns vechi nu trebuie să înlocuiască valorile noi.
-- [ ] Deschide Detalii preț și verifică desfășurarea completă; la creare, editare sau redimensionare trebuie cerut un calcul `full` proaspăt înainte de punerea comenzii în coadă.
-- [ ] Simulează o eroare de calcul și verifică faptul că suma anterioară rămâne marcată ca veche/eroare și nu se trimite nicio rezervare.
-- [ ] Dezactivează rețeaua și confirmă că rezervările din cache rămân vizibile, iar o rezervare nouă nu poate fi trimisă fără disponibilitate și preț confirmate.
-- [ ] Închide aplicația cu comenzi în coadă, repornește și confirmă recuperarea barelor optimiste și a comenzilor; reconectează și verifică sincronizarea.
-- [ ] Provoacă o respingere de disponibilitate și verifică `conflict` cu Reîncearcă, Revino la local și detaliile rezervării disponibile.
-- [ ] Revocă parola de aplicație și verifică oprirea sincronizării după 401/403 fără cereri repetate; înlocuiește parola și verifică reluarea.
-- [ ] Simulează un timeout la creare; verifică reconcilierea aceluiași UUID prin `external_id` și faptul că nu apare o rezervare duplicată.
+Folosește exclusiv un server local sau fixture-uri sintetice; nu crea și nu modifica rezervări de
+client în producție.
+
+- [ ] Conectează OAuth și confirmă că `GET /v1/workspaces` nu trimite `X-Workspace-ID`.
+- [ ] Deschide Camere și confirmă că resursele/rezervările trimit ID-ul workspace-ului `rooms`.
+- [ ] Deschide Camping și confirmă că aceleași endpoint-uri trimit ID-ul workspace-ului `camping`.
+- [ ] Confirmă că niciun body pentru resurse, rezervări, disponibilitate sau cotație nu conține `workspace_id`.
+- [ ] Folosește aceleași ID-uri de resursă și rezervare în ambele fixture-uri și confirmă izolarea cache-urilor.
+- [ ] Creează și editează câte o rezervare sintetică în fiecare workspace; confirmă că nu apare în celălalt.
+- [ ] Verifică schimbarea statusului, notei și anularea unei rezervări.
+- [ ] Verifică o cotație, actualizarea avansului cu `send_email: false` și apoi acțiunea explicită de email cu `send_email: true`.
+- [ ] Simulează un `412` și confirmă mesajul de versiune expirată fără suprascriere silențioasă.
+- [ ] Simulează offline și confirmă că snapshot-ul local rămâne vizibil, iar scrierile sunt blocate.
+- [ ] Verifică desktop și Android pentru aceleași scenarii.
+- [ ] Pe Samsung Galaxy Z Fold7 verifică ecranul exterior, interior și schimbarea dimensiunii în timpul rulării.

@@ -3,6 +3,7 @@
 const { EventEmitter } = require("node:events");
 const { webcrypto } = require("node:crypto");
 const OAuth = require("../shared/marina-oauth");
+const MarinaConfig = require("../shared/marina-config");
 
 const METADATA_PATH = "/.well-known/oauth-authorization-server";
 const TERMINAL_REFRESH_ERRORS = new Set(["invalid_grant", "invalid_token", "invalid_client", "unauthorized_client"]);
@@ -115,7 +116,7 @@ class MarinaOAuthController extends EventEmitter {
   async applyToken(payload) {
     this.accessToken = String(payload.access_token);
     this.accessTokenExpiresAt = this.now() + Math.max(0, Number(payload.expires_in) || 0) * 1000;
-    if (payload.scope) this.effectiveScopes = String(payload.scope).split(/\s+/).filter(Boolean);
+    if (payload.scope) this.effectiveScopes = MarinaConfig.normalizeScopes(payload.scope);
     if (payload.refresh_token) await this.tokenStore.setRefreshToken(String(payload.refresh_token));
   }
 

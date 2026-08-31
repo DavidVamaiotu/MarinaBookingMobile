@@ -15,9 +15,10 @@ const openAvailability = $("#openAvailability");
 const bookingMenu = $("#bookingMenu");
 const detailsPanel = $("#detailsPanel");
 const paymentDialog = $("#paymentDialog");
+const settingsDialog = $("#settingsDialog");
+const sagaInvoiceDialog = $("#sagaInvoiceDialog");
 const createDialog = $("#createDialog");
 const duplicateDialog = $("#duplicateDialog");
-const settingsDialog = $("#settingsDialog");
 const diagnostics = $("#diagnostics");
 
 const TIMELINE_WINDOW_MONTHS = 9;
@@ -45,9 +46,13 @@ const VIRTUAL_THRESHOLD = 60;
 const OVERSCAN = 10;
 const DEFAULT_TIMEZONE = "Europe/Bucharest";
 
-let state = { resources: [], bookings: [], commands: [], diagnostics: {}, settings: {}, range: null };
+let state = { resources: [], facilities: [], bookings: [], commands: [], diagnostics: {}, settings: {}, range: null };
 let activeWorkspace = "rooms";
 let workspaceSwitchId = 0;
+let appBootComplete = false;
+let pendingReservationLink = null;
+let reservationLinkProcessing = false;
+let reservationLinkAuthStarted = false;
 let duplicateBookingId = null;
 let duplicateWorkspace = null;
 let availabilityViewActive = false;
@@ -57,19 +62,46 @@ let availabilityWindowEnd = iso(addDays(availabilityWindowStart, AVAILABILITY_WI
 let availabilityScrollLeft = 0;
 let availabilityScrollFrame = null;
 let availabilityLastShiftAt = 0;
-let marinaMigrationRunning = false;
+function isMarinaSource(source) { return source === "rooms" || source === "camping"; }
+
+function defaultSagaInvoiceSettings() {
+  if (typeof window.SagaInvoice?.defaultSupplierSettings === "function") return window.SagaInvoice.defaultSupplierSettings();
+  return { name: "Marina Park", cif: "", regCom: "", address: "", city: "", county: "", phone: "", email: "", iban: "", country: "RO", vatRate: "11" };
+}
+
+function normalizeSagaInvoiceSettings(value = {}) {
+  if (typeof window.SagaInvoice?.normalizeSupplierSettings === "function") return window.SagaInvoice.normalizeSupplierSettings(value);
+  const input = value && typeof value === "object" ? value : {};
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const candidate = String(input[key] ?? "").trim();
+      if (candidate) return candidate;
+    }
+    return "";
+  };
+  return {
+    name: pick("name", "supplierName", "companyName"),
+    cif: pick("cif", "supplierCif", "companyCif"),
+    regCom: pick("regCom", "reg_com", "supplierRegCom"),
+    address: pick("address", "adresa", "supplierAddress"),
+    city: pick("city", "localitate", "supplierCity"),
+    county: pick("county", "judet", "supplierCounty"),
+    phone: pick("phone", "telefon", "supplierPhone"),
+    email: pick("email", "mail", "supplierEmail"),
+    iban: pick("iban", "supplierIban"),
+    country: pick("country", "tara") || "RO",
+    vatRate: pick("vatRate", "vat_rate") || "11"
+  };
+}
 
 function updateWorkspaceUi() {
   const camping = activeWorkspace === "camping";
-  const marina = activeWorkspace === "marina";
+  const marina = isMarinaSource(activeWorkspace);
   const marinaConnected = marina && state.settings?.connected === true;
   const marinaCanWrite = marinaConnected && state.settings?.capabilities?.canMutateBookings === true;
-  if ((camping || marina) && availabilityViewActive) setAvailabilityView(false);
+  if (camping && availabilityViewActive) setAvailabilityView(false);
   timelineShell.classList.toggle("is-camping-workspace", camping);
-  openAvailability.hidden = camping || marina;
-  const marinaMigrationAvailable = typeof window.marina.previewMarinaMigration === "function" && typeof window.marina.runMarinaMigration === "function";
-  $("#marinaMigrationAction").hidden = !marinaConnected || !marinaMigrationAvailable;
-  $("#marinaMigrationAction").disabled = marinaMigrationRunning || state.settings?.capabilities?.canManageResources !== true || state.settings?.capabilities?.canMutateBookings !== true;
+  openAvailability.hidden = camping;
   const savedPricingLabel = document.querySelector('input[name="keepSavedNoteAndDeposit"]')?.closest("label");
   if (savedPricingLabel) savedPricingLabel.hidden = false;
   $("#keepSavedPricingLabel").textContent = marina
@@ -87,10 +119,11 @@ function updateWorkspaceUi() {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
   });
-  $("#timelineTitle").textContent = marina ? "Marina Calendar" : camping ? "Calendar camping" : "Calendar camere";
-  $("#timelineSubtitle").textContent = marina ? "Rezervări din booking.husi.ro" : camping ? "Corturi și rulote" : "Camere și bungalow-uri";
-  $("#openCreate").textContent = marina ? "Rezervare Marina" : camping ? "Rezervare camping" : "Rezervare nouă";
+  $("#timelineTitle").textContent = camping ? "Calendar camping" : "Calendar camere";
+  $("#timelineSubtitle").textContent = camping ? "Workspace Marina: Camping" : "Workspace Marina: Rooms";
+  $("#openCreate").textContent = camping ? "Rezervare camping" : "Rezervare cameră";
   updateMarinaSetupUi();
+  updateSettingsConnectionUi();
 }
 
 function updateMarinaSetupUi() {
@@ -102,20 +135,100 @@ function updateMarinaSetupUi() {
     : settings.connecting ? "Se așteaptă autentificarea"
       : settings.connected ? "Conectat" : configured ? "Pregătit pentru conectare" : "Dezactivat";
   $("#marinaSetupDetail").textContent = settings.configurationError
-    ? "Configurația Marina nu poate fi activată până când URL-ul API este corectat."
+    ? "Configurația Marina nu poate fi activată până când valorile configurate sunt corectate."
     : settings.connecting ? "Finalizează autorizarea în browserul sistemului. Calendarul se va încărca după revenirea în aplicație."
       : settings.connected ? "Contul Marina este conectat prin OAuth."
         : configured ? "Conectează contul Marina prin OAuth Authorization Code cu PKCE."
           : "Calendarul Marina este opțional și rămâne dezactivat până la configurarea clientului OAuth public.";
   $("#marinaSetupApi").textContent = settings.apiBaseUrl || "https://booking.husi.ro";
+  $("#marinaSetupWorkspace").textContent = settings.workspaceSlug
+    ? `${settings.workspaceSlug}${settings.workspaceId == null ? "" : ` (#${settings.workspaceId})`}`
+    : "—";
   $("#marinaSetupScopes").textContent = settings.oauthScopes || "resources:read resources:write bookings:read bookings:write";
   const action = $("#marinaSetupAction");
   action.disabled = !configured || Boolean(settings.configurationError) || Boolean(settings.connecting);
   action.textContent = settings.connected ? "Deconectează Marina" : settings.connecting ? "Autentificare în curs…" : "Conectează Marina";
 }
 
+function updateSettingsConnectionUi() {
+  if (!settingsDialog) return;
+  const settings = state.settings || {};
+  const configured = settings.configured === true;
+  const status = $("#settingsConnectionStatus");
+  status.textContent = settings.configurationError
+    ? "Configurația Marina este invalidă."
+    : settings.connecting ? "Autentificarea Marina este în curs în browserul sistemului."
+      : settings.connected ? "Contul Marina este conectat și calendarul poate fi sincronizat."
+        : configured ? "Contul Marina nu este conectat pe acest dispozitiv."
+          : "Conexiunea Marina nu este configurată în această versiune.";
+  const action = $("#settingsMarinaAction");
+  action.disabled = !configured || Boolean(settings.configurationError) || Boolean(settings.connecting);
+  action.textContent = settings.connected ? "Deconectează Marina" : settings.connecting ? "Autentificare în curs…" : "Conectează Marina";
+}
+
+function applySagaInvoiceSettingsToForm(form, settings = sagaInvoiceSettings) {
+  const values = normalizeSagaInvoiceSettings(settings);
+  form.elements.supplierName.value = values.name;
+  form.elements.supplierCif.value = values.cif;
+  form.elements.supplierRegCom.value = values.regCom;
+  form.elements.supplierAddress.value = values.address;
+  form.elements.supplierCity.value = values.city;
+  form.elements.supplierCounty.value = values.county;
+  form.elements.supplierPhone.value = values.phone;
+  form.elements.supplierEmail.value = values.email;
+  form.elements.supplierIban.value = values.iban;
+  form.elements.vatRate.value = [...form.elements.vatRate.options].some((option) => option.value === values.vatRate)
+    ? values.vatRate
+    : "11";
+}
+
+async function loadSagaInvoiceSettings({ force = false } = {}) {
+  if (!force && sagaInvoiceSettingsLoad) return sagaInvoiceSettingsLoad;
+  const operation = Promise.resolve().then(async () => {
+    if (typeof window.marina?.getSagaInvoiceSettings !== "function") return sagaInvoiceSettings;
+    const saved = await window.marina.getSagaInvoiceSettings();
+    sagaInvoiceSettings = { ...defaultSagaInvoiceSettings(), ...normalizeSagaInvoiceSettings(saved) };
+    return sagaInvoiceSettings;
+  });
+  const pending = operation.finally(() => {
+    if (sagaInvoiceSettingsLoad === pending) sagaInvoiceSettingsLoad = null;
+  });
+  sagaInvoiceSettingsLoad = pending;
+  return pending;
+}
+
+async function toggleMarinaConnection() {
+  const connected = state.settings?.connected === true;
+  if (connected && !confirm("Deconectezi contul Marina de pe acest dispozitiv?")) return;
+  await runExclusive("marina-connection", [$("#settingsMarinaAction"), $("#marinaSetupAction")], async () => {
+    const next = connected ? await window.marina.disconnectMarina() : await window.marina.connectMarina();
+    if (isMarinaSource(activeWorkspace)) applyState(next);
+  });
+}
+
+async function openSettingsDialog({ connectIfNeeded = false } = {}) {
+  cancelDrag();
+  if (createDialog.open) createDialog.close();
+  if (duplicateDialog.open) duplicateDialog.close();
+  closeBookingOverlays();
+  const form = $("#settingsForm");
+  applySagaInvoiceSettingsToForm(form);
+  $("#settingsStatus").textContent = "";
+  updateSettingsConnectionUi();
+  if (!settingsDialog.open) settingsDialog.showModal();
+  try {
+    await loadSagaInvoiceSettings({ force: true });
+    if (!settingsDialog.open) return;
+    applySagaInvoiceSettingsToForm(form);
+    if (connectIfNeeded && state.settings?.configured === true && state.settings?.connected !== true && !state.settings?.connecting) await toggleMarinaConnection();
+  } catch (error) {
+    $("#settingsStatus").textContent = shortErrorMessage(error);
+    showError(error);
+  }
+}
+
 async function switchWorkspace(source) {
-  if (!new Set(["rooms", "camping", "marina"]).has(source) || source === activeWorkspace) return;
+  if (!new Set(["rooms", "camping"]).has(source) || source === activeWorkspace) return;
   cancelDrag();
   const switchId = ++workspaceSwitchId;
   invalidateCalendarRequests();
@@ -123,7 +236,8 @@ async function switchWorkspace(source) {
   if (duplicateDialog.open) duplicateDialog.close();
   if (paymentDialog.open) paymentDialog.close();
   if (settingsDialog.open) settingsDialog.close();
-  settingsWorkspace = null;
+  if (sagaInvoiceDialog.open) sagaInvoiceDialog.close();
+  sagaInvoiceDraft = null;
   bookingMenu.hidden = true;
   detailsPanel.hidden = true;
   diagnostics.hidden = true;
@@ -139,7 +253,7 @@ async function switchWorkspace(source) {
     const next = await window.marina.bootstrap(range);
     if (switchId !== workspaceSwitchId || activeWorkspace !== source) return;
     applyState(next);
-    if ((source === "marina" && state.settings.connected) || (source !== "marina" && state.settings.credentialsConfigured && state.settings.apiBaseUrl)) await refreshRange({ force: false, quiet: true });
+    if (state.settings.connected) await refreshRange({ force: false, quiet: true });
   } catch (error) {
     if (switchId === workspaceSwitchId && activeWorkspace === source) showError(error);
   }
@@ -194,7 +308,11 @@ let monthDividerDays = [];
 let rowRenderFrame = null;
 let selectedBookingId = null;
 let selectedBookingView = "";
+let sagaInvoiceDraft = null;
+let sagaInvoiceSettings = defaultSagaInvoiceSettings();
+let sagaInvoiceSettingsLoad = null;
 const paymentSnapshots = new Map();
+const marinaPaymentRequestKeys = new Map();
 const paymentSnapshotErrors = new Map();
 const paymentSnapshotLoading = new Set();
 let dragState = null;
@@ -206,13 +324,12 @@ let quoteRequestId = 0;
 let quoteState = "stale";
 let createQuote = null;
 let createQuoteKey = "";
-let createQuoteConfirmedAt = 0;
 let createCalendarMonth = monthStart(todayIso());
 let createSelectionStart = "";
 let createSelectionEnd = "";
 let detailsPreferredSelection = { start: "", end: "" };
 let detailsInitialQuoteKey = "";
-const showTrashedByWorkspace = { rooms: false, camping: false, marina: false };
+const showTrashedByWorkspace = { rooms: false, camping: false };
 let showTrashed = showTrashedByWorkspace.rooms;
 let lastScrollLeft = 0;
 let lastRecenterAt = 0;
@@ -223,7 +340,6 @@ let lastDragEndedAt = 0;
 let newlyCreatedBookingId = null;
 let newlyCreatedHighlightTimer = null;
 let createSubmitting = false;
-let settingsWorkspace = null;
 const pendingActions = new Map();
 
 async function runExclusive(key, controls, action) {
@@ -282,9 +398,7 @@ function formatMonth(value) {
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]); }
 
 const DISPLAY_STATUS = { approved: "aprobată", pending: "în așteptare", synced: "sincronizat", queued: "în coadă", sending: "se trimite", failed: "eșuată", conflict: "conflict", needs_attention: "necesită atenție", cancelled: "anulată" };
-const DISPLAY_COMMAND = { create: "creare", edit: "editare", status: "status", note: "notă", trash: "gunoi", deposit_update: "actualizare avans", payment_request: "email de plată" };
 function displayStatus(value) { return DISPLAY_STATUS[value] || "necunoscut"; }
-function displayCommand(value) { return DISPLAY_COMMAND[value] || "acțiune"; }
 
 const CALENDAR_WEEKDAYS = ["LU", "MA", "MI", "JO", "VI", "SÂ", "DU"];
 
@@ -620,30 +734,16 @@ const API_ACTION_MESSAGES = Object.freeze({
   setNote: ["Se salvează nota…", "Nota a fost salvată."],
   setTrash: ["Se actualizează rezervarea…", "Rezervarea a fost actualizată."],
   updateDeposit: ["Se salvează avansul…", "Avansul a fost salvat."],
-  requestPayment: ["Se programează emailul de plată…", "Emailul de plată a fost programat."],
-  retryCommand: ["Se reîncearcă acțiunea…", "Acțiunea a fost retrimisă."],
-  revertBooking: ["Se anulează modificarea locală…", "Modificarea locală a fost anulată."],
-  clearFailedCommands: ["Se curăță acțiunile eșuate…", "Acțiunile eșuate au fost curățate."],
-  pauseQueue: ["Se opresc acțiunile…", "Acțiunile au fost oprite."],
-  resumeQueue: ["Se repornesc acțiunile…", "Acțiunile au fost repornite."],
-  testConnection: ["Se testează conexiunea API…", "Conexiunea API funcționează."]
+  requestPayment: ["Se programează emailul de plată…", "Emailul de plată a fost programat."]
 });
-const DESKTOP_QUEUE_MESSAGES = Object.freeze({
-  revertBooking: "Modificarea locală a fost anulată.",
-  clearFailedCommands: "Acțiunile eșuate au fost curățate.",
-  pauseQueue: "Acțiunile au fost oprite.",
-  resumeQueue: "Acțiunile au fost repornite."
-});
-const apiToastErrors = new WeakSet();
-const toastTimers = new WeakMap();
-const commandSyncToasts = new Map();
-const observedCommandStatuses = new Map();
-const observedCommandWorkspaces = new Set();
 
 function shortErrorMessage(error) {
   const message = ErrorMessages.message(error);
   return message.length > 150 ? `${message.slice(0, 147)}…` : message;
 }
+
+const apiToastErrors = new WeakSet();
+const toastTimers = new WeakMap();
 
 function showToast(message, state = "success", toast = null) {
   const region = $("#toast");
@@ -679,10 +779,7 @@ async function runApiAction(method, ...args) {
   const toast = showToast(pendingMessage, "pending");
   try {
     const result = await window.marina[method](...args);
-    const completedMessage = window.marina.platform === "android" || !DESKTOP_QUEUE_MESSAGES[method]
-      ? successMessage
-      : DESKTOP_QUEUE_MESSAGES[method];
-    showToast(completedMessage, "success", toast);
+    showToast(successMessage, "success", toast);
     return result;
   } catch (error) {
     showToast(shortErrorMessage(error), "error", toast);
@@ -691,96 +788,26 @@ async function runApiAction(method, ...args) {
   }
 }
 
-function notifyCommandStateChanges(commands = []) {
-  if (window.marina.platform === "android") return;
-  const workspace = activeWorkspace;
-  const currentKeys = new Set(commands.map((command) => `${workspace}:${command.id}`));
-  if (!observedCommandWorkspaces.has(workspace)) {
-    commands.forEach((command) => observedCommandStatuses.set(`${workspace}:${command.id}`, command.status));
-    observedCommandWorkspaces.add(workspace);
-    return;
-  }
-  commands.forEach((command) => {
-    const key = `${workspace}:${command.id}`;
-    const previous = observedCommandStatuses.get(key);
-    if (previous !== command.status) {
-      const label = displayCommand(command.type);
-      const existing = commandSyncToasts.get(key);
-      if (command.status === "sending") {
-        commandSyncToasts.set(key, showToast(`Se sincronizează: ${label}…`, "pending", existing));
-      } else if (command.status === "synced") {
-        showToast(`Sincronizare reușită: ${label}.`, "success", existing);
-        commandSyncToasts.delete(key);
-      } else if (["failed", "conflict", "needs_attention"].includes(command.status)) {
-        showToast(shortErrorMessage(command.errorMessage || `Sincronizarea a eșuat: ${label}.`), "error", existing);
-        commandSyncToasts.delete(key);
-      }
-      observedCommandStatuses.set(key, command.status);
-    }
-  });
-  for (const [key, toast] of commandSyncToasts) {
-    if (key.startsWith(`${workspace}:`) && !currentKeys.has(key)) {
-      toast.remove();
-      commandSyncToasts.delete(key);
-    }
-  }
-}
-
 function bookingById(localId) { return state.bookings.find((booking) => booking.localId === localId); }
 function resourceById(resourceId) { return state.resources.find((resource) => Number(resource.id) === Number(resourceId)); }
 
 function updateSyncUi() {
   const info = state.diagnostics || {};
-  const marina = activeWorkspace === "marina";
-  const queueControlsAvailable = window.marina.platform !== "android" && !marina;
-  $("#pauseQueue").hidden = !queueControlsAvailable || Boolean(info.queuePaused);
-  $("#resumeQueue").hidden = !queueControlsAvailable || !info.queuePaused;
-  if (marina) {
-    const indicator = $("#syncIndicator");
-    indicator.className = `sync-indicator ${info.online ? "online" : "offline"}`;
-    indicator.dataset.issueCount = "";
-    $("#syncText").textContent = state.settings?.connecting ? "Autentificare…" : state.settings?.connected ? info.online ? "Conectat" : "Conectat, nesincronizat" : "Deconectat";
-    $("#syncCounts").textContent = state.settings?.connected ? `${state.resources.length} resurse` : "OAuth necesar";
-    $("#banner").hidden = true;
-    updateMarinaSetupUi();
-    return;
-  }
-  const campingSetupRequired = activeWorkspace === "camping" && !state.settings?.credentialsConfigured;
-  const endpointChanged = state.commands.some((command) => command.errorCode === "endpoint_changed");
   const indicator = $("#syncIndicator");
-  indicator.className = `sync-indicator ${info.failed ? "attention" : info.online ? "online" : "offline"}`;
-  indicator.dataset.issueCount = info.failed || "";
-  $("#syncText").textContent = info.queuePaused ? "Acțiuni oprite" : endpointChanged ? "Verifică adresa API" : info.authPaused ? "Verifică datele de acces" : info.online ? "Conectat" : "Deconectat";
-  $("#syncCounts").textContent = `${info.queued || 0} în coadă · ${info.failed || 0} cu probleme`;
-  const banner = $("#banner");
-  if (info.queuePaused) {
-    banner.hidden = false;
-    banner.textContent = "Acțiunile automate sunt oprite. Comenzile rămân local până când apeși Repornește acțiunile.";
-  } else if (campingSetupRequired) {
-    banner.hidden = false;
-    banner.textContent = "Camping este pregătit local. Instalează Marina Booking API pe camping.marinapark.ro și configurează parola de aplicație în Setări pentru sincronizare.";
-  } else if (endpointChanged) {
-    banner.hidden = false;
-    banner.textContent = "Adresa API s-a schimbat. Verifică ținta înainte de a reîncerca comenzile din coadă.";
-  } else if (info.authPaused) {
-    banner.hidden = false;
-    banner.textContent = "Sincronizarea este oprită. Actualizează datele WordPress în Setări.";
-  } else if (!info.online) {
-    banner.hidden = false;
-    banner.textContent = window.marina.platform === "android"
-      ? "Mod offline pe telefon: poți consulta ultimul calendar salvat; modificările necesită conexiune."
-      : "Mod offline: modificările sunt păstrate local și se vor sincroniza când API-ul este disponibil.";
-  } else if (info.failed) {
-    banner.hidden = false;
-    banner.textContent = "Unele modificări necesită atenție. Deschide diagnosticul pentru reîncercare sau detalii despre conflict.";
-  } else banner.hidden = true;
+  indicator.className = `sync-indicator ${info.online ? "online" : "offline"}`;
+  indicator.dataset.issueCount = "";
+  $("#syncText").textContent = state.settings?.connecting ? "Autentificare…" : state.settings?.connected ? info.online ? "Conectat" : "Conectat, nesincronizat" : "Deconectat";
+  $("#syncCounts").textContent = state.settings?.connected ? `${state.resources.length} resurse` : "OAuth necesar";
+  $("#diagnosticSummary").textContent = `Conectare: ${info.online ? "da" : "nu"} · resurse: ${state.resources.length} · rezervări în interval: ${state.bookings.length} · ultima sincronizare: ${info.lastSuccessfulSync ? new Date(info.lastSuccessfulSync).toLocaleString("ro-RO") : "niciodată"}`;
+  $("#banner").hidden = true;
+  updateMarinaSetupUi();
 }
 
 function fillResourceSelects() {
   const options = (resources) => resources.map((resource) => `<option value="${resource.id}"${resource.active === false ? " disabled" : ""}>${escapeHtml(resource.title)}${resource.active === false ? " (inactiv)" : ""}</option>`).join("");
   const createSelect = $("#createForm").elements.resourceId;
   const createValue = createSelect.value;
-  createSelect.innerHTML = options(activeWorkspace === "camping" ? timelineResources() : state.resources) || '<option value="">Nu există spații în cache</option>';
+  createSelect.innerHTML = options(state.resources) || '<option value="">Nu există spații în cache</option>';
   if (createValue) createSelect.value = createValue;
   for (const select of document.querySelectorAll('#detailsForm select[name="resourceId"]')) {
     const value = select.value;
@@ -889,61 +916,25 @@ function assignLanes(items) {
   return TimelineAdapter.assignLanes(items);
 }
 
-function resourceParentId(resource) {
-  const parentId = Number(resource?.parentId ?? resource?.parent_id);
-  return Number.isInteger(parentId) && parentId > 0 ? parentId : null;
-}
-
 function resourceLooksCaravan(resource) {
-  return /rulot|caravan/i.test(`${resource?.title || ""} ${resource?.defaultForm || resource?.default_form || ""}`);
+  const settings = resource?.settings && typeof resource.settings === "object" ? JSON.stringify(resource.settings) : "";
+  return /rulot|caravan|camper|rv/i.test(`${resource?.title || ""} ${resource?.defaultForm || resource?.default_form || ""} ${settings}`);
 }
 
 function campingParentResources() {
-  const activeResources = state.resources.filter((resource) => resource.active !== false);
-  const roots = activeResources.filter((resource) => !resourceParentId(resource));
-  const candidates = roots.length ? roots : activeResources;
-  const caravan = candidates.find(resourceLooksCaravan)
-    || activeResources.find((resource) => Number(resource.id) === 2)
-    || candidates[1];
-  const tent = candidates.find((resource) => /cort|tent/i.test(`${resource.title || ""} ${resource.defaultForm || resource.default_form || ""}`))
-    || activeResources.find((resource) => Number(resource.id) === 1)
-    || candidates.find((resource) => Number(resource.id) !== Number(caravan?.id));
-  return [
-    tent ? { ...tent, title: "Corturi" } : { id: 1, title: "Corturi", capacity: 10, defaultForm: "standard", active: true },
-    caravan ? { ...caravan, title: "Rulote" } : { id: 2, title: "Rulote", capacity: 5, defaultForm: "rulota", active: true }
-  ];
+  return state.resources.filter((resource) => resource.active !== false);
 }
 
 function timelineResources() {
-  if (activeWorkspace !== "camping") return state.resources;
-  return campingParentResources();
+  return state.resources;
 }
 
 function isCaravanResource(resourceId) {
-  const [tentParent, caravanParent] = campingParentResources();
-  const tentParentId = Number(tentParent?.id);
-  const caravanParentId = Number(caravanParent?.id);
-  let resource = resourceById(resourceId);
-  const visited = new Set();
-  while (resource && !visited.has(Number(resource.id))) {
-    const currentId = Number(resource.id);
-    visited.add(currentId);
-    if (currentId === caravanParentId) return true;
-    if (currentId === tentParentId) return false;
-    const parentId = resourceParentId(resource);
-    resource = parentId ? resourceById(parentId) : null;
-  }
-  return Number(resourceId) === caravanParentId;
+  return resourceLooksCaravan(resourceById(resourceId));
 }
 
 function timelineBookings() {
-  if (activeWorkspace !== "camping") return state.bookings;
-  const [, caravan] = timelineResources();
-  const [tent] = timelineResources();
-  return state.bookings.map((booking) => ({
-    ...booking,
-    timelineResourceId: isCaravanResource(booking.resourceId) ? caravan.id : tent.id
-  }));
+  return state.bookings;
 }
 
 function prepareRows() {
@@ -1224,87 +1215,7 @@ function handleAvailabilityScroll() {
   });
 }
 
-function commandPayload(command) {
-  return command?.payload && typeof command.payload === "object" ? command.payload : {};
-}
-
-function commandFormData(command) {
-  const payload = commandPayload(command);
-  return payload.form_data || payload.formData || {};
-}
-
-function commandClientLabel(command) {
-  const booking = command.bookingLocalId ? bookingById(command.bookingLocalId) : null;
-  const source = booking || { formData: commandFormData(command) };
-  const name = [BookingFields.value(source, "firstName"), BookingFields.value(source, "lastName")].filter(Boolean).join(" ").trim();
-  if (name) return name;
-  return command.bookingLocalId ? `Rezervare ${command.bookingLocalId}` : "Client nou";
-}
-
-function commandFieldValue(field) {
-  const value = String(field?.value ?? "").trim();
-  if (field?.type === "checkbox") return ["true", "yes", "1", "on"].includes(value.toLowerCase()) ? "da" : "nu";
-  return value || "gol";
-}
-
-function commandDate(value) {
-  return String(value || "").slice(0, 10);
-}
-
-function commandChangeSummary(command) {
-  const payload = commandPayload(command);
-  const booking = command.bookingLocalId ? bookingById(command.bookingLocalId) : null;
-  const details = [];
-  if (["create", "edit"].includes(command.type)) {
-    const resourceId = payload.resource_id ?? payload.resourceId ?? command.resourceId;
-    const resource = resourceById(resourceId);
-    if (command.type === "create" || !booking || Number(resourceId) !== Number(booking.resourceId)) details.push(`Unitate: ${resource?.title || `#${resourceId}`}`);
-    const dates = Array.isArray(payload.dates) ? payload.dates.map(commandDate).filter(Boolean) : [];
-    const bookingDates = Array.isArray(booking?.dates) ? booking.dates.map(commandDate) : [];
-    if (dates.length && (command.type === "create" || dates.join("|") !== bookingDates.join("|"))) details.push(`Perioadă: ${dates[0]} – ${dates[dates.length - 1]}`);
-    if (command.type === "edit") {
-      for (const [name, field] of Object.entries(commandFormData(command))) {
-        if (commandFieldValue(field) !== commandFieldValue(booking?.formData?.[name])) details.push(`${detailsFieldLabel(name, field)}: ${commandFieldValue(field)}`);
-      }
-      if (Object.hasOwn(payload, "note") && String(payload.note || "") !== String(booking?.note || "")) details.push(`Notă: ${String(payload.note || "").trim() || "ștearsă"}`);
-    }
-    if (command.type === "create") details.unshift("Rezervare nouă");
-  } else if (command.type === "status") details.push(`Status: ${payload.status === "approved" ? "aprobată" : "în așteptare"}`);
-  else if (command.type === "note") details.push(`Notă: ${String(payload.note || "").trim() || "ștearsă"}`);
-  else if (command.type === "trash") details.push(payload.trash ?? payload.trashed ? "Mutare în gunoi" : "Restabilire din gunoi");
-  else if (command.type === "deposit_update") details.push(`Avans: ${payload.deposit} RON${payload.total != null ? ` din ${payload.total} RON` : ""}`);
-  else if (command.type === "payment_request") {
-    details.push(`Trimite emailul de plată${payload.reason ? ` (${payload.reason})` : ""}`);
-    if (payload.start_date && payload.end_date) details.push(`Perioadă: ${payload.start_date} – ${payload.end_date}`);
-  }
-  if (payload.send_email) details.push("Cu notificare email");
-  return details.join(" · ") || "Detaliile schimbării nu mai sunt disponibile.";
-}
-
-function renderCommands() {
-  const clearableStatuses = window.marina.platform === "android" ? ["failed", "conflict", "needs_attention"] : ["failed"];
-  const failedCount = state.commands.filter((command) => clearableStatuses.includes(command.status)).length;
-  const commandHtml = (command, compact = false) => {
-    const retryable = ["failed", "conflict", "needs_attention"].includes(command.status);
-    const client = commandClientLabel(command);
-    const change = commandChangeSummary(command);
-    const errorMessage = command.errorMessage ? ErrorMessages.message(command.errorMessage) : "";
-    const bookingActions = command.bookingLocalId && window.marina.platform !== "android"
-      ? `<button class="secondary compact" data-revert-booking="${escapeHtml(command.bookingLocalId)}" type="button">Revino la local</button><button class="secondary compact" data-open-booking="${escapeHtml(command.bookingLocalId)}" type="button">Deschide detaliile</button>`
-      : command.bookingLocalId && ["deposit_update", "payment_request"].includes(command.type)
-        ? `<button class="secondary compact" data-revert-booking="${escapeHtml(command.bookingLocalId)}" type="button">Anulează și reîncarcă</button>` : "";
-    return `<div class="command"><div><strong>${escapeHtml(displayCommand(command.type))}</strong> <span>${escapeHtml(displayStatus(command.status))}</span></div><small>${new Date(command.updatedAt).toLocaleString("ro-RO")}</small><div class="command-details"><div><strong>Client:</strong> ${escapeHtml(client)}</div><div><strong>Schimbare:</strong> ${escapeHtml(change)}</div></div>${errorMessage ? `<div class="error"><strong>Eroare:</strong> ${escapeHtml(errorMessage)}</div>` : ""}${!compact && retryable ? `<button class="secondary compact" data-retry-command="${command.id}" type="button">Reîncearcă</button>${bookingActions}` : ""}</div>`;
-  };
-  $("#commandList").innerHTML = state.commands.map((command) => commandHtml(command)).join("") || '<div class="availability">Nu există comenzi.</div>';
-  $("#clearQueueIssues").hidden = failedCount === 0;
-  const info = state.diagnostics;
-  const cache = info.cache?.loadedAt ? `${info.cache.startDate}–${info.cache.endDate}, verificat ${new Date(info.cache.loadedAt).toLocaleString("ro-RO")}` : "nu este încărcat";
-  $("#diagnosticSummary").textContent = `Acțiuni automate: ${info.queuePaused ? "oprite" : "pornite"} · conectare: ${info.online ? "da" : "nu"} · în coadă: ${info.queued || 0} · probleme: ${info.failed || 0} · ultima sincronizare: ${info.lastSuccessfulSync ? new Date(info.lastSuccessfulSync).toLocaleString("ro-RO") : "niciodată"} · cache: ${cache}`;
-  if (selectedBookingId && $("#bookingCommands")) $("#bookingCommands").innerHTML = state.commands.filter((command) => command.bookingLocalId === selectedBookingId).map((command) => commandHtml(command, true)).join("") || "Nu există comenzi locale.";
-}
-
 function applyState(next) {
-  notifyCommandStateChanges(next.commands);
   state = next;
   updateWorkspaceUi();
   fillResourceSelects();
@@ -1312,8 +1223,10 @@ function applyState(next) {
   updateSyncUi();
   renderTimeline();
   renderAvailabilityTimeline();
-  renderCommands();
-  if (createDialog.open) renderCreateCalendar();
+  if (createDialog.open) {
+    renderFacilityOptions($("#createForm"));
+    renderCreateCalendar();
+  }
   if (selectedBookingId) {
     const booking = bookingById(selectedBookingId);
     if (booking && selectedBookingView === "menu") populateBookingMenu(booking);
@@ -1426,6 +1339,55 @@ function selectedResource(form = calendarForm()) {
   return state.resources.find((resource) => Number(resource.id) === id) || null;
 }
 
+function facilityNameKey(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function facilityLegacyField(facility) {
+  const key = facilityNameKey(facility?.name);
+  if (["extrabed", "patsuplimentar"].includes(key)) return "pat-suplimentar";
+  if (["electricity", "electricitate", "energieelectrica"].includes(key)) return "Energie_electrica";
+  return "";
+}
+
+function selectedFacilityIds(form = calendarForm()) {
+  return [...form.querySelectorAll("[data-facility-id]:checked")]
+    .map((input) => Number(input.dataset.facilityId))
+    .filter((id) => Number.isSafeInteger(id) && id > 0)
+    .filter((id, index, ids) => ids.indexOf(id) === index)
+    .sort((a, b) => a - b);
+}
+
+function facilityEligibleForResource(facility, resource) {
+  return facility.appliesToAllResources === true || (facility.resourceIds || []).map(String).includes(String(resource?.providerId || ""));
+}
+
+function facilityPriceLabel(facility) {
+  const amount = (Number(facility.pricePerNightMinor) || 0) / 100;
+  return `${new Intl.NumberFormat("ro-RO", { minimumFractionDigits: amount % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(amount)} lei/noapte`;
+}
+
+function renderFacilityOptions(form = calendarForm(), booking = null) {
+  const container = $(form.id === "detailsForm" ? "#detailsFacilities" : "#createFacilities");
+  const resource = selectedResource(form);
+  const selected = new Set(booking ? (booking.facilityIds || booking.facilities?.map((facility) => facility.id) || []) : selectedFacilityIds(form));
+  const historical = (booking?.facilities || []).filter((snapshot) => !state.facilities.some((facility) => Number(facility.id) === Number(snapshot.id)));
+  const facilities = [...(state.facilities || []), ...historical]
+    .filter((facility) => facilityEligibleForResource(facility, resource) || selected.has(Number(facility.id)))
+    .filter((facility) => facility.active !== false || selected.has(Number(facility.id)));
+  container.innerHTML = facilities.map((facility) => {
+    const id = Number(facility.id);
+    const archived = facility.active === false;
+    return `<label class="facility-option"><input type="checkbox" data-facility-id="${id}"${selected.has(id) ? " checked" : ""}><span>${escapeHtml(facility.name || `Facilitatea ${id}`)} <small>(${escapeHtml(facilityPriceLabel(facility))}${archived ? ", arhivată" : ""})</small></span></label>`;
+  }).join("");
+  container.hidden = facilities.length === 0;
+}
+
+function bookingFacilityCatalog(booking) {
+  const snapshots = booking?.facilities || [];
+  return [...(state.facilities || []), ...snapshots.filter((snapshot) => !(state.facilities || []).some((facility) => Number(facility.id) === Number(snapshot.id)))];
+}
+
 function createOccupancy(form = calendarForm()) {
   if (activeWorkspace === "camping") return {};
   const bookings = editingDetails()
@@ -1459,6 +1421,10 @@ function pricingFormData(form) {
     const fields = BookingFields.prepareFormData(detailsFormData(booking, form), booking.resourceId);
     fields.starttime = { value: activeWorkspace === "camping" ? "14:00" : "15:00", type: "text" };
     fields.endtime = { value: "12:00", type: "text" };
+    for (const facility of (state.facilities || []).filter((item) => selectedFacilityIds(form).includes(Number(item.id)))) {
+      const legacyField = facilityLegacyField(facility);
+      if (legacyField) fields[legacyField] = { value: "true", type: "checkbox" };
+    }
     return fields;
   }
   const camping = activeWorkspace === "camping";
@@ -1472,11 +1438,15 @@ function pricingFormData(form) {
     fields.car_plates = { value: form.elements.vehiclePlate.value, type: "text" };
     if (isCaravanResource(form.elements.resourceId.value) && form.elements.electricity.checked) fields.Energie_electrica = { value: "true", type: "checkbox" };
   } else if (form.elements.extraBed.checked) fields["pat-suplimentar"] = { value: "true", type: "checkbox" };
+  for (const facility of (state.facilities || []).filter((item) => selectedFacilityIds(form).includes(Number(item.id)))) {
+    const legacyField = facilityLegacyField(facility);
+    if (legacyField) fields[legacyField] = { value: "true", type: "checkbox" };
+  }
   return fields;
 }
 
 function pricingKeyFormData(form) {
-  if (form.id !== "detailsForm") return pricingFormData(form);
+  if (form.id !== "detailsForm") return { ...pricingFormData(form), facilityIds: selectedFacilityIds(form) };
   const fields = {
     visitors: form.elements.adults.value,
     children: form.elements.children.value
@@ -1486,6 +1456,7 @@ function pricingKeyFormData(form) {
     if (!isPricingExtraField(name)) continue;
     fields[name] = input.type === "checkbox" ? input.checked : input.value;
   }
+  fields.facilityIds = selectedFacilityIds(form);
   return fields;
 }
 
@@ -1493,15 +1464,21 @@ function updateCreateWorkspaceFields() {
   const form = $("#createForm");
   const camping = activeWorkspace === "camping";
   const caravan = camping && isCaravanResource(form.elements.resourceId.value);
+  const resource = selectedResource(form);
+  const facilityBackedLegacyFields = new Set((state.facilities || [])
+    .filter((facility) => facility.active !== false && facilityEligibleForResource(facility, resource))
+    .map(facilityLegacyField)
+    .filter(Boolean));
   $("#createVehiclePlate").hidden = !camping;
   form.elements.vehiclePlate.required = caravan;
-  $("#createElectricity").hidden = !caravan;
-  form.elements.electricity.disabled = !caravan;
-  if (!caravan) form.elements.electricity.checked = false;
-  $("#createExtraBed").hidden = camping;
-  if (camping) form.elements.extraBed.checked = false;
+  $("#createElectricity").hidden = !caravan || facilityBackedLegacyFields.has("Energie_electrica");
+  form.elements.electricity.disabled = !caravan || facilityBackedLegacyFields.has("Energie_electrica");
+  if (!caravan || facilityBackedLegacyFields.has("Energie_electrica")) form.elements.electricity.checked = false;
+  $("#createExtraBed").hidden = camping || facilityBackedLegacyFields.has("pat-suplimentar");
+  if (camping || facilityBackedLegacyFields.has("pat-suplimentar")) form.elements.extraBed.checked = false;
   document.querySelectorAll(".booking-legend > span:not(:first-child)").forEach((item) => { item.hidden = camping; });
   $("#createForm > header p").textContent = camping ? "Adăugare client camping" : "Adăugare client";
+  renderFacilityOptions(form);
 }
 
 function quoteInput(form = $("#createForm"), { mode = "fast", forceFresh = false } = {}) {
@@ -1509,6 +1486,7 @@ function quoteInput(form = $("#createForm"), { mode = "fast", forceFresh = false
     resourceId: Number(form.elements.resourceId.value),
     dates: rangeDates(form.elements.start.value, form.elements.end.value),
     formData: pricingFormData(form),
+    facilityIds: selectedFacilityIds(form),
     bookingFormType: selectedResource(form)?.defaultForm || "",
     mode,
     forceFresh
@@ -1542,7 +1520,7 @@ function normalizedRecalculatedQuote(quote) {
   const rawDeposit = quote?.deposit;
   const deposit = Number(rawDeposit);
   if (!Number.isFinite(total) || total < 0 || rawDeposit === null || rawDeposit === undefined || rawDeposit === "" || !Number.isFinite(deposit) || deposit < 0) {
-    throw Object.assign(new Error("Booking Calendar nu a returnat un cost și un avans valide."), { code: "invalid_price_quote", permanent: true });
+    throw Object.assign(new Error("Marina nu a returnat un cost și un avans valide."), { code: "invalid_price_quote", permanent: true });
   }
   if (deposit > total) {
     throw Object.assign(new Error("Avansul calculat depășește noul cost total."), { code: "invalid_price_quote", permanent: true });
@@ -1573,8 +1551,8 @@ function invalidateCalendarRequests() {
 function updateCreateSubmitState() {
   const form = calendarForm();
   const currentKey = currentQuoteKey(form);
-  const marinaPricingChanged = activeWorkspace === "marina" && editingDetails() && currentKey !== detailsInitialQuoteKey;
-  const quoteRequired = !editingDetails() || activeWorkspace !== "marina" || marinaPricingChanged;
+  const marinaPricingChanged = editingDetails() && currentKey !== detailsInitialQuoteKey;
+  const quoteRequired = !editingDetails() || marinaPricingChanged;
   const savedDetailsQuoteAvailable = editingDetails()
     && currentKey === detailsInitialQuoteKey
     && Boolean(PricingNote.parse(form.elements.note.value));
@@ -1763,9 +1741,7 @@ function openCreate({ resourceId, date } = {}) {
 
 function openDuplicate(booking) {
   cancelDrag();
-  const resources = activeWorkspace === "camping"
-    ? campingParentResources()
-    : state.resources.filter((resource) => resource.active !== false && Number(resource.id) !== Number(booking.resourceId));
+  const resources = state.resources.filter((resource) => resource.active !== false && Number(resource.id) !== Number(booking.resourceId));
   if (!resources.length) {
     showError(new Error("Nu există un alt spațiu activ pentru această rezervare."));
     return;
@@ -1794,8 +1770,9 @@ function formBookingInput(form) {
       ...pricingFormData(form)
     },
     bookingFormType: selectedResource()?.defaultForm || "",
+    facilityIds: selectedFacilityIds(form),
     note: createPricingNote(createQuote),
-    ...(activeWorkspace === "marina" && createQuote?.quoteId ? { quoteId: createQuote.quoteId } : {}),
+    ...(createQuote?.quoteId ? { quoteId: createQuote.quoteId } : {}),
     approved: Boolean(form.elements.approved?.checked),
     sendEmail: Boolean(form.elements.sendEmail.checked)
   };
@@ -1823,21 +1800,16 @@ async function fetchCreateQuote(requestId, key, { mode = "fast", forceFresh = fa
     quoteState = "fresh";
     createQuote = { ...displayedQuote, valid: true };
     createQuoteKey = key;
-    createQuoteConfirmedAt = Date.now();
-    const providerLabel = source === "marina" ? "Marina" : "Booking Calendar";
+    const providerLabel = "Marina";
     setCreatePricing(mode === "full" ? `Preț complet confirmat de ${providerLabel}.` : `Preț calculat de ${providerLabel}.`, "available");
     renderCreateSummary();
     return true;
   } catch (error) {
     if (source !== activeWorkspace || requestId !== quoteRequestId || key !== currentQuoteKey(form)) return false;
     quoteState = "error";
-    const unavailable = source === "marina"
-      ? "Prețul Marina nu a putut fi calculat. Verificați conexiunea și configurarea prețurilor."
-      : error?.code === "rest_no_route"
-      ? "Actualizați Marina Booking API la versiunea 1.0.4 pentru calcularea prețului."
-      : error?.permanent && error?.message
-        ? ErrorMessages.message(error, "Prețul nou nu a putut fi calculat.")
-      : "Prețul nou nu a putut fi calculat. Ultimul preț afișat este vechi.";
+    const unavailable = error?.permanent && error?.message
+      ? ErrorMessages.message(error, "Prețul Marina nu a putut fi calculat.")
+      : "Prețul Marina nu a putut fi calculat. Verificați conexiunea și configurarea prețurilor.";
     setCreatePricing(unavailable, "unavailable");
     renderCreateSummary();
     return false;
@@ -1869,7 +1841,7 @@ async function refreshPriceNow({ forceFresh = true } = {}) {
   clearTimeout(quoteTimer);
   const key = currentQuoteKey(calendarForm());
   if (!key) return false;
-  const marinaExpiresAt = activeWorkspace === "marina" ? Date.parse(String(createQuote?.expiresAt || createQuote?.expires_at || "")) : NaN;
+  const marinaExpiresAt = Date.parse(String(createQuote?.expiresAt || createQuote?.expires_at || ""));
   const marinaFreshEnough = Number.isFinite(marinaExpiresAt) && marinaExpiresAt > Date.now() + 30_000;
   if (
     !editingDetails()
@@ -1877,14 +1849,15 @@ async function refreshPriceNow({ forceFresh = true } = {}) {
     && createQuote?.valid
     && createQuote.mode === "full"
     && createQuoteKey === key
-    && (activeWorkspace === "marina" ? (!forceFresh && marinaFreshEnough) : Date.now() - createQuoteConfirmedAt < 15_000)
+    && !forceFresh
+    && marinaFreshEnough
   ) return true;
   const requestId = ++quoteRequestId;
   return fetchCreateQuote(requestId, key, { mode: "full", forceFresh, source: activeWorkspace });
 }
 
 function requireValidQuote(result) {
-  if (result?.valid === false) throw Object.assign(new Error(result.message || "Booking Calendar a respins acest calcul."), { code: "invalid_price_quote", permanent: true });
+  if (result?.valid === false) throw Object.assign(new Error(result.message || "Marina a respins acest calcul."), { code: "invalid_price_quote", permanent: true });
   return result;
 }
 
@@ -1905,7 +1878,7 @@ function scheduleAvailabilityCheck({ resetSelectionOnUnavailable = false } = {})
   const requestId = ++availabilityRequestId;
   if (activeWorkspace === "camping") {
     availabilityState = "available";
-    setCreateAvailability("Campingul are capacitate multiplă; alocarea finală este verificată de WordPress.", "available");
+    setCreateAvailability("Campingul are capacitate multiplă; alocarea finală este verificată de Marina.", "available");
     updateCreateSubmitState();
     return;
   }
@@ -1917,9 +1890,9 @@ function scheduleAvailabilityCheck({ resetSelectionOnUnavailable = false } = {})
     const end = form.elements.end.value;
     const source = activeWorkspace;
     const booking = editingDetails() ? bookingById(selectedBookingId) : null;
-    const excludeBookingId = booking && source !== "marina" ? booking.serverId : null;
+    const excludeBookingId = null;
     const currentRange = booking ? normalizedBookingDateRange(booking) : null;
-    const marinaSelfOverlap = source === "marina"
+    const marinaSelfOverlap = isMarinaSource(source)
       && booking
       && Number(booking.resourceId) === resourceId
       && currentRange?.valid
@@ -2030,6 +2003,12 @@ function detailsFormData(booking, form) {
     const value = input.type === "checkbox" ? (input.checked ? "true" : "no") : input.value;
     formData[input.dataset.extraField] = { value, type: input.dataset.fieldType || (input.type === "checkbox" ? "checkbox" : "text") };
   }
+  const facilityCatalog = bookingFacilityCatalog(booking);
+  for (const legacyField of new Set(facilityCatalog.map(facilityLegacyField).filter(Boolean))) formData[legacyField] = { value: "no", type: "checkbox" };
+  for (const facility of facilityCatalog.filter((item) => selectedFacilityIds(form).includes(Number(item.id)))) {
+    const legacyField = facilityLegacyField(facility);
+    if (legacyField) formData[legacyField] = { value: "true", type: "checkbox" };
+  }
   return formData;
 }
 
@@ -2052,22 +2031,23 @@ function populateBookingMenu(booking) {
   const approved = booking.status === "approved";
   const statusLabel = approved ? "Aprobată" : "În așteptare";
   const note = String(booking.note || "").trim();
-  const marinaWritable = activeWorkspace !== "marina" || state.settings?.capabilities?.canMutateBookings === true;
+  const marinaWritable = state.settings?.capabilities?.canMutateBookings === true;
   const updated = booking.updatedAt ? new Intl.DateTimeFormat("ro-RO", { dateStyle: "medium", timeStyle: "short", timeZone: configuredTimeZone() }).format(new Date(booking.updatedAt)) : "";
   $("#bookingPaymentMenu").hidden = true;
   $("#bookingPaymentMenuToggle").setAttribute("aria-expanded", "false");
   $("#bookingPaymentMenuToggle").parentElement.hidden = false;
-  $("#bookingMenuSendPayment").hidden = activeWorkspace === "marina";
-  $("#bookingMenuDuplicate").hidden = activeWorkspace === "marina";
+  $("#bookingMenuSendPayment").hidden = !marinaWritable;
+  $("#bookingMenuGenerateInvoice").hidden = !(booking.serverId || booking.providerId) || state.settings?.connected !== true;
+  $("#bookingMenuDuplicate").hidden = true;
   $("#bookingMenuEdit").disabled = !marinaWritable;
   $("#bookingMenuStatus").disabled = !marinaWritable;
-  $("#bookingMenuTrash").disabled = !marinaWritable || (activeWorkspace === "marina" && booking.trashed);
+  $("#bookingMenuTrash").disabled = !marinaWritable;
   $("#bookingMenuTitle").textContent = `ID: ${booking.serverId || "local"}`;
   $("#bookingMenuStatus").classList.toggle("is-pending-action", approved);
   $("#bookingMenuStatus").querySelector(".action-label").textContent = approved ? "Pune în așteptare" : "Aprobă";
   $("#bookingMenuStatus").title = approved ? "Pune rezervarea în așteptare" : "Aprobă rezervarea";
-  $("#bookingMenuTrash").querySelector(".action-label").textContent = activeWorkspace === "marina" ? "Anulează" : booking.trashed ? "Restabilește" : "Gunoi";
-  $("#bookingMenuTrash").title = activeWorkspace === "marina" ? "Anulează rezervarea Marina" : booking.trashed ? "Restabilește rezervarea" : "Mută rezervarea la gunoi";
+  $("#bookingMenuTrash").querySelector(".action-label").textContent = booking.trashed ? "Restaurează" : "Anulează";
+  $("#bookingMenuTrash").title = booking.trashed ? "Restaurează rezervarea Marina" : "Anulează rezervarea Marina";
   $("#bookingMenuContent").innerHTML = `
     <div class="booking-menu-badges">
       <span class="booking-id-badge">${escapeHtml(String(booking.serverId || "local"))}</span>
@@ -2132,9 +2112,9 @@ function openBookingMenu(booking, anchor) {
   prepareBookingMenuPosition();
   bookingMenu.hidden = false;
   positionBookingMenu(anchorRect);
-  if (activeWorkspace === "marina") {
+  if (isMarinaSource(activeWorkspace)) {
     void window.marina.getBooking(booking.localId).then((detailed) => {
-      if (!detailed || activeWorkspace !== "marina" || selectedBookingId !== booking.localId || bookingMenu.hidden) return;
+      if (!detailed || !isMarinaSource(activeWorkspace) || selectedBookingId !== booking.localId || bookingMenu.hidden) return;
       state.bookings = state.bookings.map((item) => item.localId === detailed.localId ? detailed : item);
       populateBookingMenu(detailed);
       positionBookingMenu(anchorRect);
@@ -2160,15 +2140,18 @@ function closeBookingOverlays() {
   bookingMenu.hidden = true;
   detailsPanel.hidden = true;
   if (paymentDialog.open) paymentDialog.close();
+  if (sagaInvoiceDialog.open) sagaInvoiceDialog.close();
+  sagaInvoiceDraft = null;
   selectedBookingId = null;
   selectedBookingView = "";
   detailsPreferredSelection = { start: "", end: "" };
 }
 
 function dismissTopLayer() {
-  if (settingsDialog.open) { settingsWorkspace = null; settingsDialog.close(); return true; }
   if (duplicateDialog.open) { duplicateDialog.close(); return true; }
   if (createDialog.open) { createDialog.close(); return true; }
+  if (settingsDialog.open) { settingsDialog.close(); return true; }
+  if (sagaInvoiceDialog.open) { sagaInvoiceDialog.close(); return true; }
   if (paymentDialog.open) { paymentDialog.close(); selectedBookingId = null; selectedBookingView = ""; return true; }
   if (!bookingMenu.hidden) { dismissBookingMenu(); return true; }
   if (!detailsPanel.hidden) {
@@ -2192,14 +2175,13 @@ function populateDetails(booking, reset = true) {
   bookingMenu.hidden = true;
   const form = $("#detailsForm");
   const approved = booking.status === "approved";
-  const marinaWritable = activeWorkspace !== "marina" || state.settings?.capabilities?.canMutateBookings === true;
+  const marinaWritable = state.settings?.capabilities?.canMutateBookings === true;
   $("#detailsStatus").textContent = approved ? "Pune în așteptare" : "Aprobă";
   $("#detailsStatus").title = approved ? "Pune rezervarea în așteptare" : "Aprobă rezervarea";
-  $("#detailsTrash").textContent = booking.trashed ? "Restabilește" : "Gunoi";
-  if (activeWorkspace === "marina") $("#detailsTrash").textContent = "Anulează rezervarea";
-  $("#detailsTrash").title = activeWorkspace === "marina" ? "Anulează rezervarea Marina" : booking.trashed ? "Restabilește rezervarea" : "Mută rezervarea la gunoi";
+  $("#detailsTrash").textContent = booking.trashed ? "Restaurează rezervarea" : "Anulează rezervarea";
+  $("#detailsTrash").title = booking.trashed ? "Restaurează rezervarea Marina" : "Anulează rezervarea Marina";
   $("#detailsStatus").disabled = !marinaWritable;
-  $("#detailsTrash").disabled = !marinaWritable || (activeWorkspace === "marina" && booking.trashed);
+  $("#detailsTrash").disabled = !marinaWritable;
   if (reset) {
     form.reset();
     form.elements.name.value = BookingFields.value(booking, "firstName");
@@ -2221,9 +2203,13 @@ function populateDetails(booking, reset = true) {
       : activeWorkspace === "camping"
         ? [["car_plates", { value: "", type: "text" }]]
         : [];
-    const optionFields = extraFields.filter(([name, field]) => !isVehiclePlateField(name) && !isElectricityField(name) && !BookingFields.isDetailsField(name, field));
+    const facilityBackedLegacyFields = new Set(bookingFacilityCatalog(booking).map(facilityLegacyField).filter(Boolean));
+    const optionFields = extraFields.filter(([name, field]) => !isVehiclePlateField(name)
+      && !(name === "pat-suplimentar" && facilityBackedLegacyFields.has("pat-suplimentar"))
+      && !isElectricityField(name)
+      && !BookingFields.isDetailsField(name, field));
     const electricityFields = extraFields.filter(([name]) => isElectricityField(name));
-    if (activeWorkspace === "camping") optionFields.push(electricityFields.find(([, field]) => String(field?.value || "").trim()) || electricityFields[0] || ["Energie_electrica", { value: "no", type: "checkbox" }]);
+    if (activeWorkspace === "camping" && !facilityBackedLegacyFields.has("Energie_electrica")) optionFields.push(electricityFields.find(([, field]) => String(field?.value || "").trim()) || electricityFields[0] || ["Energie_electrica", { value: "no", type: "checkbox" }]);
     const namedObservation = extraFields.find(([name, field]) => BookingFields.matchesName(name, "details") && BookingFields.isDetailsField(name, field));
     const observation = namedObservation || extraFields.find(([name, field]) => !isVehiclePlateField(name) && BookingFields.isDetailsField(name, field)) || ["details", { value: "", type: "textarea" }];
     const reservationFields = [...optionFields, observation];
@@ -2231,6 +2217,7 @@ function populateDetails(booking, reset = true) {
     $("#clientExtraFields").innerHTML = clientFields.map(([name, field]) => detailsFieldHtml(name, field)).join("");
     $("#reservationExtraFields").hidden = reservationFields.length === 0;
     $("#reservationExtraFields").innerHTML = reservationFields.map(([name, field]) => detailsFieldHtml(name, field)).join("");
+    renderFacilityOptions(form, booking);
     const initialDates = normalizedBookingDateRange(booking);
     form.elements.start.value = initialDates.start;
     form.elements.end.value = initialDates.end;
@@ -2255,12 +2242,11 @@ function populateDetails(booking, reset = true) {
   renderDetailsPrice(createQuote?.valid ? createPricingNote(createQuote) : form.elements.note.value, createQuote);
   const clientName = [BookingFields.value(booking, "firstName"), BookingFields.value(booking, "lastName")].filter(Boolean).join(" ").trim();
   $("#detailsTitle").textContent = clientName || `Rezervarea ${booking.serverId || "locală"}`;
-  renderCommands();
   detailsPanel.hidden = false;
 }
 
 function renderDetailsPrice(note, quote = null) {
-  const marinaQuote = activeWorkspace === "marina" && quote?.valid ? quote : null;
+  const marinaQuote = quote?.valid ? quote : null;
   const pricing = marinaQuote ? null : PricingNote.parse(note);
   const values = marinaQuote
     ? [marinaQuote.total, marinaQuote.deposit, marinaQuote.balance].map((value) => `${formatCreateMoney(value).replace(/\s*lei$/i, "")} RON`)
@@ -2285,8 +2271,88 @@ function populatePaymentDialog(booking, reset = true) {
   $("#paymentDialogTitle").textContent = clientName ? `Avans — ${clientName}` : `Avans rezervare ${booking.serverId || "locală"}`;
   renderPaymentSection(booking, reset);
   if (!paymentDialog.open) paymentDialog.showModal();
-  const unresolvedDeposit = unresolvedPaymentCommand(booking, "deposit_update");
-  if (reset || (!paymentSnapshots.has(booking.localId) && !paymentSnapshotErrors.has(booking.localId) && !paymentSnapshotLoading.has(booking.localId) && !unresolvedDeposit)) void refreshPaymentSnapshot(booking);
+  if (reset || (!paymentSnapshots.has(booking.localId) && !paymentSnapshotErrors.has(booking.localId) && !paymentSnapshotLoading.has(booking.localId))) void refreshPaymentSnapshot(booking);
+}
+
+function populateSagaInvoiceDialog(booking, payment) {
+  const form = $("#sagaInvoiceForm");
+  const customer = window.SagaInvoice.customerFromBooking(booking);
+  const total = window.SagaInvoice.paymentTotal(payment, booking);
+  const bookingId = booking.providerId || booking.serverId || booking.localId || "local";
+  applySagaInvoiceSettingsToForm(form);
+  form.elements.invoiceNumber.value = `MARINA-${bookingId}`;
+  form.elements.issueDate.value = todayIso();
+  $("#sagaInvoiceClientName").textContent = [customer.firstName, customer.lastName].filter(Boolean).join(" ") || "Client fără nume";
+  $("#sagaInvoiceClientAddress").textContent = [customer.address, customer.city, customer.county].filter(Boolean).join(", ") || "Adresa clientului nu este disponibilă";
+  $("#sagaInvoiceClientTotal").textContent = total === null ? "Cost total: indisponibil" : `Cost total: ${PricingNote.formatAmount(total)} lei`;
+  $("#sagaInvoiceStatus").textContent = "";
+}
+
+async function loadSagaInvoiceDraft(booking) {
+  const source = activeWorkspace;
+  const bookingKey = booking.localId;
+  if (!(booking.serverId || booking.providerId)) throw new Error("Rezervarea nu are un ID de server valid.");
+  const [detailed, payment] = await Promise.all([
+    window.marina.getBooking(bookingKey),
+    window.marina.getPayment(bookingKey, { source })
+  ]);
+  if (source !== activeWorkspace || selectedBookingId !== bookingKey || selectedBookingView !== "invoice") return null;
+  const current = detailed || booking;
+  if (detailed) state.bookings = state.bookings.map((item) => item.localId === bookingKey ? detailed : item);
+  paymentSnapshots.set(bookingKey, payment);
+  return { booking: current, payment };
+}
+
+function sagaInvoiceSupplierFromForm(form) {
+  return {
+    name: form.elements.supplierName.value.trim(),
+    cif: form.elements.supplierCif.value.trim(),
+    regCom: form.elements.supplierRegCom.value.trim(),
+    address: form.elements.supplierAddress.value.trim(),
+    city: form.elements.supplierCity.value.trim(),
+    county: form.elements.supplierCounty.value.trim(),
+    phone: form.elements.supplierPhone.value.trim(),
+    email: form.elements.supplierEmail.value.trim(),
+    iban: form.elements.supplierIban.value.trim(),
+    country: "RO"
+  };
+}
+
+function downloadTextFile(content, filename, type = "application/xml;charset=utf-8") {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function openSagaInvoiceDialog(booking) {
+  selectedBookingId = booking.localId;
+  selectedBookingView = "invoice";
+  bookingMenu.hidden = true;
+  $("#bookingPaymentMenu").hidden = true;
+  $("#bookingPaymentMenuToggle").setAttribute("aria-expanded", "false");
+  await loadSagaInvoiceSettings();
+  populateSagaInvoiceDialog(booking, paymentSnapshots.get(booking.localId));
+  $("#sagaInvoiceStatus").textContent = "Se verifică rezervarea și plata în API-ul Marina…";
+  $("#sagaInvoiceSubmit").disabled = true;
+  if (!sagaInvoiceDialog.open) sagaInvoiceDialog.showModal();
+  try {
+    const draft = await loadSagaInvoiceDraft(booking);
+    if (!draft) return false;
+    sagaInvoiceDraft = draft;
+    populateSagaInvoiceDialog(draft.booking, draft.payment);
+    return true;
+  } catch (error) {
+    if (sagaInvoiceDialog.open) sagaInvoiceDialog.close();
+    throw error;
+  } finally {
+    if (selectedBookingView === "invoice" && selectedBookingId === booking.localId) $("#sagaInvoiceSubmit").disabled = false;
+  }
 }
 
 async function refreshPaymentSnapshot(booking) {
@@ -2307,10 +2373,6 @@ async function refreshPaymentSnapshot(booking) {
   }
 }
 
-function unresolvedPaymentCommand(booking, type) {
-  return state.commands.find((command) => command.bookingLocalId === booking.localId && command.type === type && ["queued", "sending", "failed", "conflict", "needs_attention"].includes(command.status));
-}
-
 function paymentAmount(value) {
   if (value === null || value === undefined || value === "") return null;
   const amount = Number(value);
@@ -2319,19 +2381,16 @@ function paymentAmount(value) {
 
 function renderPaymentSection(booking, reset = false) {
   const form = $("#paymentForm");
-  const paymentSourceLabel = activeWorkspace === "marina" ? "Marina" : "WordPress";
-  const depositCommand = unresolvedPaymentCommand(booking, "deposit_update");
-  const emailCommand = unresolvedPaymentCommand(booking, "payment_request");
+  const paymentSourceLabel = "Marina";
   const snapshot = paymentSnapshots.get(booking.localId);
   const snapshotError = paymentSnapshotErrors.get(booking.localId);
   const serverNoteAvailable = typeof snapshot?.note === "string";
   const note = serverNoteAvailable ? snapshot.note : String(booking.note || "");
   const pricing = PricingNote.parse(note);
-  const pendingDeposit = depositCommand && ["queued", "sending"].includes(depositCommand.status);
   const databaseDeposit = paymentAmount(snapshot?.deposit);
   const snapshotTotal = paymentAmount(snapshot?.total);
   const total = snapshotTotal ?? paymentAmount(pricing?.total);
-  const deposit = paymentAmount(pendingDeposit ? depositCommand.payload?.deposit : databaseDeposit ?? pricing?.deposit);
+  const deposit = paymentAmount(databaseDeposit ?? pricing?.deposit);
   const balance = total !== null && deposit !== null ? Math.round((total - deposit) * 100) / 100 : paymentAmount(pricing?.balance);
   const amountsAvailable = [total, deposit, balance].every((value) => value !== null);
   const authoritativePaymentAvailable = Boolean(snapshot && snapshotTotal !== null && databaseDeposit !== null);
@@ -2347,7 +2406,7 @@ function renderPaymentSection(booking, reset = false) {
   $("#paymentNoteLabel").textContent = serverNoteAvailable ? `Notă ${paymentSourceLabel}` : "Notă locală";
   $("#paymentNoteText").textContent = note || "Nu există notă.";
   const paymentDatabaseLabel = $("#paymentDatabaseDeposit").parentElement?.querySelector("strong");
-  if (paymentDatabaseLabel) paymentDatabaseLabel.textContent = activeWorkspace === "marina" ? "Avans în API-ul Marina" : "Avans în baza de date WordPress";
+  if (paymentDatabaseLabel) paymentDatabaseLabel.textContent = "Avans în API-ul Marina";
   $("#paymentDatabaseDeposit").textContent = databaseDeposit === null
     ? paymentSnapshotLoading.has(booking.localId)
       ? "Se verifică…"
@@ -2355,19 +2414,16 @@ function renderPaymentSection(booking, reset = false) {
         ? "Verificare eșuată"
         : "Indisponibil"
     : `${PricingNote.formatAmount(databaseDeposit)} lei`;
-  $("#saveDeposit").disabled = !authoritativePaymentAvailable || !booking.serverId || Boolean(depositCommand || emailCommand);
+  $("#saveDeposit").disabled = !authoritativePaymentAvailable || !booking.serverId;
   const email = BookingFields.value(booking, "email") || snapshot?.email;
-  const verifiedForEmail = pendingDeposit || (authoritativePaymentAvailable && snapshot.email_available !== false);
-  $("#sendPaymentRequest").disabled = !booking.serverId || booking.trashed || !email || !verifiedForEmail || Boolean(emailCommand);
+  const verifiedForEmail = authoritativePaymentAvailable && snapshot.email_available !== false;
+  $("#sendPaymentRequest").disabled = !booking.serverId || booking.trashed || !email || !verifiedForEmail;
   let status = "";
-  if (depositCommand && ["failed", "conflict", "needs_attention"].includes(depositCommand.status)) status = `${depositCommand.errorMessage ? ErrorMessages.message(depositCommand.errorMessage) : `Avans: ${displayStatus(depositCommand.status)}.`}${emailCommand ? " Emailul rămâne blocat până la rezolvare." : ""}`;
-  else if (emailCommand) status = emailCommand.status === "queued" ? "Email programat; va fi trimis după salvarea avansului." : emailCommand.errorMessage ? ErrorMessages.message(emailCommand.errorMessage) : `Email: ${displayStatus(emailCommand.status)}.`;
-  else if (depositCommand) status = depositCommand.status === "queued" ? "Avans salvat în coadă." : depositCommand.errorMessage ? ErrorMessages.message(depositCommand.errorMessage) : `Avans: ${displayStatus(depositCommand.status)}.`;
-  else if (paymentSnapshotLoading.has(booking.localId)) status = "Se verifică suma nativă de plată…";
+  if (paymentSnapshotLoading.has(booking.localId)) status = "Se verifică suma nativă de plată…";
   else if (snapshotError) status = `Suma nativă nu a putut fi verificată: ${snapshotError}`;
   else if (!authoritativePaymentAvailable) status = `${paymentSourceLabel} nu a returnat un cost și un avans valide.`;
   else if (!email) status = "Rezervarea nu are o adresă de email. Adaugă emailul în Detalii rezervare.";
-  else if (snapshot?.email_available === false) status = activeWorkspace === "marina" ? "Emailurile de plată Marina vor fi adăugate ulterior." : "Emailurile de plată nu sunt disponibile în configurația WordPress.";
+  else if (snapshot?.email_available === false) status = "Emailurile de plată nu sunt disponibile în API-ul Marina.";
   $("#paymentStatus").textContent = status;
 }
 
@@ -2565,9 +2621,9 @@ async function endDrag(event) {
   try {
     const bookingFormType = resourceById(completed.booking.resourceId)?.defaultForm || "";
     const formData = BookingFields.prepareFormData(completed.booking.formData, completed.booking.resourceId);
-    const quote = requireValidQuote(await window.marina.quoteBooking({ resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, dates: completed.booking.dates, formData, bookingFormType, mode: "full", forceFresh: true, source }));
+    const quote = requireValidQuote(await window.marina.quoteBooking({ resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, dates: completed.booking.dates, formData, facilityIds: completed.booking.facilityIds || [], bookingFormType, mode: "full", forceFresh: true, source }));
     if (source !== activeWorkspace) throw workspaceChangedError();
-    await runApiAction("editBooking", completed.booking.localId, { dates: completed.booking.dates, resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, formData, bookingFormType, ...(source === "marina" && quote.quoteId ? { quoteId: quote.quoteId } : {}), source });
+    await runApiAction("editBooking", completed.booking.localId, { dates: completed.booking.dates, resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, formData, facilityIds: completed.booking.facilityIds || [], bookingFormType, ...(quote.quoteId ? { quoteId: quote.quoteId } : {}), source });
     renderTimeline();
     void refreshRange({ force: false, quiet: true });
   } catch (error) {
@@ -2622,47 +2678,10 @@ document.querySelector(".workspace-tabs").addEventListener("click", (event) => {
 openAvailability.addEventListener("click", () => setAvailabilityView(!availabilityViewActive));
 $("#closeAvailability").addEventListener("click", () => setAvailabilityView(false));
 $("#marinaSetupAction").addEventListener("click", async () => {
-  if (activeWorkspace !== "marina") return;
-  try {
-    const next = state.settings?.connected ? await window.marina.disconnectMarina() : await window.marina.connectMarina();
-    if (activeWorkspace === "marina") applyState(next);
-  } catch (error) { showError(error); }
+  try { await toggleMarinaConnection(); } catch (error) { showError(error); }
 });
-$("#marinaMigrationAction").addEventListener("click", async () => {
-  if (activeWorkspace !== "marina" || marinaMigrationRunning) return;
-  try {
-    const preview = await window.marina.previewMarinaMigration();
-    const pricingSummary = preview.pricingSource
-      ? `\nPrețuri: ${preview.pricingResources} resurse din pagina publică Marina (${preview.pricingCoverage?.from || "?"} – ${preview.pricingCoverage?.to || "?"})${preview.pricingWarnings?.length ? `\nAvertismente prețuri: ${preview.pricingWarnings.length}` : ""}`
-      : "";
-    const warningSummary = preview.pricingWarnings?.length ? `\n\nAvertismente:\n${preview.pricingWarnings.slice(0, 8).map((warning) => `- ${warning}`).join("\n")}${preview.pricingWarnings.length > 8 ? "\n- …" : ""}` : "";
-    const message = `Importul va citi numai resursele și rezervările WPBooking și pagina publică de prețuri Marina, apoi va scrie numai în Marina.\n\nResurse: ${preview.resources} (${preview.pendingResources} rămase)\nRezervări: ${preview.bookings} (${preview.pendingBookings} rămase)\nAprobate: ${preview.approved}\nÎn așteptare: ${preview.pending}\nAnulate/gunoi: ${preview.cancelled}${pricingSummary}${warningSummary}\n\nContinui?`;
-    if (!confirm(message)) return;
-    marinaMigrationRunning = true;
-    updateWorkspaceUi();
-    const banner = $("#banner");
-    banner.hidden = false;
-    banner.textContent = "Importul Camere și prețurile Marina au început…";
-    const result = await window.marina.runMarinaMigration();
-    const pricingReport = Array.isArray(result.pricingReport) ? result.pricingReport : [];
-    const pricingFailures = pricingReport.filter((item) => item.error).length;
-    const pricingSkipped = pricingReport.filter((item) => item.skippedWrite).length;
-    banner.textContent = `Import finalizat: ${result.importedResources} resurse, ${result.importedBookings} rezervări și ${result.importedPricing || 0} configurații de preț.${pricingReport.length ? ` Prețuri verificate: ${pricingReport.length - pricingFailures}; fără PUT nou: ${pricingSkipped}; erori: ${pricingFailures}.` : ""}`;
-  } catch (error) { showError(error); }
-  finally {
-    marinaMigrationRunning = false;
-    updateWorkspaceUi();
-  }
-});
-window.marina.onMarinaMigrationProgress?.((status) => {
-  marinaMigrationRunning = Boolean(status?.running);
-  if (activeWorkspace !== "marina") return;
-  updateWorkspaceUi();
-  if (!status?.progress) return;
-  const labels = { "pricing-extract": "extragere prețuri", "pricing-validation": "validare prețuri", "pricing-publish": "publicare prețuri", "pricing-verify": "verificare prețuri", resources: "resurse", bookings: "rezervări", complete: "finalizare" };
-  const banner = $("#banner");
-  banner.hidden = false;
-  banner.textContent = `Import Camere: ${labels[status.progress.phase] || status.progress.phase} ${status.progress.completed}/${status.progress.total}.`;
+$("#settingsMarinaAction").addEventListener("click", async () => {
+  try { await toggleMarinaConnection(); } catch (error) { showError(error); }
 });
 availabilityGrid.addEventListener("scroll", handleAvailabilityScroll, { passive: true });
 $("#openCreate").addEventListener("click", () => openCreate());
@@ -2698,8 +2717,10 @@ $("#createForm").elements.children.addEventListener("change", schedulePriceCheck
 $("#createForm").elements.extraBed.addEventListener("change", schedulePriceCheck);
 $("#createForm").elements.vehiclePlate.addEventListener("input", schedulePriceCheck);
 $("#createForm").elements.electricity.addEventListener("change", schedulePriceCheck);
+$("#createFacilities").addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.resourceId.addEventListener("change", () => {
   const form = $("#detailsForm");
+  renderFacilityOptions(form);
   fillGuestCounts(form);
   restorePreferredDetailsSelection();
   if (!createSelectionStart || !createSelectionEnd) {
@@ -2754,33 +2775,24 @@ async function saveBookingDetails(booking, form) {
     const bookingFormType = resourceById(resourceId)?.defaultForm || "";
     const pricingChanged = currentQuoteKey(form) !== detailsInitialQuoteKey;
     const replaceNoteAndDeposit = !form.elements.keepSavedNoteAndDeposit.checked;
-    const marina = source === "marina";
+    const marina = true;
     if (availabilityState !== "available") throw Object.assign(new Error("Disponibilitatea trebuie confirmată înainte de salvare."), { code: "availability_unconfirmed", permanent: true });
-    const needsMarinaQuote = marina && (pricingChanged || replaceNoteAndDeposit);
-    if ((marina ? needsMarinaQuote : pricingChanged || replaceNoteAndDeposit) && !await refreshPriceNow({ forceFresh: true })) return;
+    const needsMarinaQuote = pricingChanged || replaceNoteAndDeposit;
+    if (needsMarinaQuote && !await refreshPriceNow({ forceFresh: true })) return;
     const recalculatedQuote = replaceNoteAndDeposit ? normalizedRecalculatedQuote(createQuote) : null;
     const note = replaceNoteAndDeposit
-      ? marina
-        ? PricingNote.update(form.elements.note.value, recalculatedQuote.deposit, recalculatedQuote.total).note
-        : recalculatedBookingNote(recalculatedQuote, form.elements.note.value)
+      ? recalculatedBookingNote(recalculatedQuote, form.elements.note.value)
       : form.elements.note.value;
     if (source !== activeWorkspace || selectedBookingId !== booking.localId) throw workspaceChangedError();
     const formData = detailsFormData(booking, form);
     const outboundFormData = BookingFields.prepareFormData(formData, booking.resourceId);
-    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source };
+    const facilityIds = typeof selectedFacilityIds === "function" ? selectedFacilityIds(form) : (booking.facilityIds || []);
+    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source, facilityIds };
     if (marina && pricingChanged && createQuote?.quoteId) editInput.quoteId = createQuote.quoteId;
-    const savedBooking = await runApiAction("editBooking", booking.localId, editInput);
+    await runApiAction("editBooking", booking.localId, editInput);
     if (marina && (pricingChanged || replaceNoteAndDeposit || String(note) !== String(booking.note || ""))) {
       paymentSnapshots.delete(booking.localId);
       paymentSnapshotErrors.delete(booking.localId);
-    }
-    if (recalculatedQuote && !marina) {
-      const confirmedNote = typeof savedBooking?.note === "string" ? savedBooking.note : note;
-      form.elements.note.value = confirmedNote;
-      paymentSnapshots.delete(booking.localId);
-      paymentSnapshotErrors.delete(booking.localId);
-      await runApiAction("updateDeposit", booking.localId, { deposit: recalculatedQuote.deposit, total: recalculatedQuote.total, note: confirmedNote, source });
-      detailsInitialQuoteKey = currentQuoteKey(form);
     }
     if (source === activeWorkspace && selectedBookingId === booking.localId && selectedBookingView === "edit") closeBookingOverlays();
   });
@@ -2791,15 +2803,48 @@ async function openBookingDetails(localId) {
   const cached = bookingById(localId);
   if (!cached) throw new Error("Rezervarea nu a mai fost găsită. Reîncarcă lista și încearcă din nou.");
   selectedBookingId = cached.localId;
-  if (source !== "marina") {
-    populateDetails(cached);
-    return;
-  }
   // The Marina calendar already has a locally cached booking from the range
   // refresh. Render that immediately; details and notes revalidation must not
   // delay opening the editor.
   populateDetails(cached);
   void window.marina.getBooking(cached.localId).catch(() => {});
+}
+
+function reservationLinkError(error) {
+  if (error?.status === 404 || error?.code === "marina_booking_missing") return new Error("Rezervarea din link nu mai există sau a fost ștearsă.");
+  if (error?.status === 403) return new Error("Nu ai permisiunea necesară pentru a deschide această rezervare.");
+  return error;
+}
+
+async function processPendingReservationLink() {
+  if (!appBootComplete || !pendingReservationLink || reservationLinkProcessing) return;
+  reservationLinkProcessing = true;
+  try {
+    const link = pendingReservationLink;
+    if (activeWorkspace !== link.source) await switchWorkspace(link.source);
+    if (!state.settings?.connected) {
+      if (!state.settings?.connecting && !reservationLinkAuthStarted) {
+        reservationLinkAuthStarted = true;
+        applyState(await window.marina.connectMarina());
+      }
+      return;
+    }
+    reservationLinkAuthStarted = false;
+    const booking = await window.marina.getBookingByProviderId(link.bookingId, link.source);
+    if (!booking?.localId || !booking.dates?.[0]) throw Object.assign(new Error("Rezervarea din link nu conține un interval valid."), { code: "marina_booking_dates_missing", permanent: true });
+    if (pendingReservationLink !== link) return;
+    setVisibleMonth(booking.dates[0]);
+    await openBookingDetails(booking.localId);
+    pendingReservationLink = null;
+  } catch (error) {
+    const authRequired = error?.auth === true || error?.status === 401;
+    if (!authRequired) {
+      pendingReservationLink = null;
+      showError(reservationLinkError(error));
+    }
+  } finally {
+    reservationLinkProcessing = false;
+  }
 }
 
 $("#detailsForm").addEventListener("submit", async (event) => {
@@ -2820,6 +2865,7 @@ $("#detailsForm").addEventListener("input", (event) => {
   if (event.target.matches('[name="note"]') && !createQuote?.valid) renderDetailsPrice(event.target.value);
   if (event.target.matches("[data-extra-field]") && isPricingExtraField(event.target.dataset.extraField)) schedulePriceCheck();
 });
+$("#detailsFacilities").addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.adults.addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.children.addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.keepSavedNoteAndDeposit.addEventListener("change", (event) => {
@@ -2841,8 +2887,7 @@ $("#detailsStatus").addEventListener("click", async () => {
 $("#detailsTrash").addEventListener("click", async () => {
   const booking = bookingById(selectedBookingId);
   if (!booking) return;
-  const action = booking.trashed ? "restabilești rezervarea" : "muți rezervarea la gunoi";
-  if (!confirm(`Confirmi că vrei să ${action}? Rezervarea nu va fi ștearsă definitiv.`)) return;
+  if (!confirm(booking.trashed ? "Confirmi restaurarea rezervării Marina?" : "Confirmi anularea rezervării Marina?")) return;
   const form = $("#detailsForm");
   const source = activeWorkspace;
   await runExclusive(`booking:${source}:${booking.localId}`, [$("#detailsStatus"), $("#detailsTrash"), form.querySelector('[type="submit"]')], async () => { try {
@@ -2854,53 +2899,63 @@ $("#detailsTrash").addEventListener("click", async () => {
 $("#saveDeposit").addEventListener("click", async () => {
   const booking = bookingById(selectedBookingId);
   if (!booking) return;
+  const source = activeWorkspace;
   const amount = Number($("#paymentForm").elements.depositAmount.value);
   try {
     const snapshot = paymentSnapshots.get(booking.localId);
     const total = paymentAmount(snapshot?.total);
     const note = typeof snapshot?.note === "string" ? snapshot.note : String(booking.note || "");
-    if (!snapshot || total === null) throw new Error(`Așteaptă verificarea costului din ${activeWorkspace === "marina" ? "Marina" : "WordPress"} înainte de salvarea avansului.`);
+    if (!snapshot || total === null) throw new Error("Așteaptă verificarea costului din Marina înainte de salvarea avansului.");
     if (!Number.isFinite(amount) || amount < 0 || amount > total) throw new Error("Avansul trebuie să fie între zero și costul rezervării.");
     paymentSnapshots.delete(booking.localId);
     paymentSnapshotErrors.delete(booking.localId);
     closeBookingOverlays();
-    await runApiAction("updateDeposit", booking.localId, { deposit: amount, total, note, source: activeWorkspace });
+    await runApiAction("updateDeposit", booking.localId, { deposit: amount, total, note, source });
+    marinaPaymentRequestKeys.delete(`${source}:${booking.localId}`);
   } catch (error) { showError(error); }
 });
 
 async function queuePaymentEmail(booking) {
   const source = activeWorkspace;
-  const paymentRequest = PaymentRequest.fromBooking(booking);
-  const depositCommand = unresolvedPaymentCommand(booking, "deposit_update");
-  const pendingDeposit = depositCommand && ["queued", "sending"].includes(depositCommand.status);
-  let snapshot = paymentSnapshots.get(booking.localId);
-  if (!pendingDeposit) {
-    snapshot = await window.marina.getPayment(booking.localId, { source });
-    paymentSnapshots.set(booking.localId, snapshot);
-  }
-  const email = BookingFields.value(booking, "email") || snapshot?.email;
-  const deposit = Number(pendingDeposit ? depositCommand.payload?.deposit : snapshot?.deposit);
-  const total = Number(pendingDeposit ? depositCommand.payload?.total : snapshot?.total);
-  const note = typeof snapshot?.note === "string" ? snapshot.note : String(booking.note || "");
-  if (!email) throw new Error("Rezervarea nu are o adresă de email validă.");
-  if (!pendingDeposit && snapshot?.email_available === false) throw new Error("Emailurile de plată nu sunt disponibile în configurația WordPress.");
-  if (!Number.isFinite(deposit) || deposit <= 0) throw new Error("Suma nativă de plată nu a putut fi verificată.");
-  if (!pendingDeposit && (!Number.isFinite(total) || total <= 0 || !note)) throw new Error("Costul și nota WordPress nu au putut fi verificate.");
-  if (!confirm(`Trimiți către ${email} cererea de plată pentru ${PricingNote.formatAmount(deposit)} lei? Dacă aplicația este offline, emailul va rămâne în coadă.`)) return false;
+  const bookingId = booking.providerId || booking.serverId;
+  if (!bookingId) throw new Error("Rezervarea nu are un ID de server valid.");
+  const snapshot = await window.marina.getPayment(booking.localId, { source });
   if (source !== activeWorkspace) throw workspaceChangedError();
-  if (!pendingDeposit) {
-    await runApiAction("updateDeposit", booking.localId, { deposit, total, note, source });
+  paymentSnapshots.set(booking.localId, snapshot);
+  const email = BookingFields.value(booking, "email") || snapshot?.email;
+  const deposit = paymentAmount(snapshot?.deposit);
+  if (!email) throw new Error("Rezervarea nu are o adresă de email validă.");
+  if (deposit === null || deposit <= 0) throw new Error("Avansul curent nu a putut fi verificat.");
+  if (!confirm(`Trimiți către ${email} cererea de plată a avansului de ${PricingNote.formatAmount(deposit)} lei?`)) return false;
+  if (source !== activeWorkspace) throw workspaceChangedError();
+  const attemptKey = `${source}:${booking.localId}`;
+  const idempotencyKey = marinaPaymentRequestKeys.get(attemptKey) || crypto.randomUUID();
+  marinaPaymentRequestKeys.set(attemptKey, idempotencyKey);
+  try {
+    await runApiAction("requestPayment", booking.localId, {
+      send_email: true,
+      payment_type: "deposit",
+      payment_reason: "Avans rezervare",
+      idempotencyKey,
+      bookingId,
+      source: "marina"
+    });
+    marinaPaymentRequestKeys.delete(attemptKey);
+    return true;
+  } catch (error) {
+    const status = Number(error?.status);
+    if (error?.permanent === true && status < 500 && status !== 429) marinaPaymentRequestKeys.delete(attemptKey);
+    throw error;
   }
-  await runApiAction("requestPayment", booking.localId, { ...paymentRequest, source });
-  return true;
 }
 
 $("#sendPaymentRequest").addEventListener("click", async () => {
   const booking = bookingById(selectedBookingId);
   if (!booking) return;
-  try {
-    await queuePaymentEmail(booking);
-  } catch (error) { showError(error); }
+  await runExclusive(`payment-request:${activeWorkspace}:${booking.localId}`, [$("#sendPaymentRequest"), $("#bookingMenuSendPayment")], async () => {
+    try { await queuePaymentEmail(booking); }
+    catch (error) { showError(error); }
+  });
 });
 
 $("#bookingMenuEdit").addEventListener("click", async () => {
@@ -2933,9 +2988,7 @@ $("#duplicateForm").addEventListener("submit", async (event) => {
     return;
   }
   const resourceId = Number(event.currentTarget.elements.resourceId.value);
-  const resource = source === "camping"
-    ? campingParentResources().find((candidate) => Number(candidate.id) === resourceId)
-    : resourceById(resourceId);
+  const resource = resourceById(resourceId);
   let input;
   try {
     input = { ...BookingFields.duplicateBookingInput(booking, resource, { allowSameResource: source === "camping" }), source };
@@ -2944,7 +2997,7 @@ $("#duplicateForm").addEventListener("submit", async (event) => {
     return;
   }
   await runExclusive(`create:${source}`, [$("#duplicateSubmit")], async () => { try {
-    if (source === "marina") {
+    if (isMarinaSource(source)) {
       const quote = requireValidQuote(await window.marina.quoteBooking({
         ...input,
         mode: "full",
@@ -2978,6 +3031,42 @@ $("#bookingMenuChangeDeposit").addEventListener("click", () => {
   });
 });
 
+$("#bookingMenuGenerateInvoice").addEventListener("click", async () => {
+  const booking = bookingById(selectedBookingId);
+  if (!booking) return;
+  $("#bookingPaymentMenu").hidden = true;
+  $("#bookingPaymentMenuToggle").setAttribute("aria-expanded", "false");
+  await runExclusive(`saga-invoice:${activeWorkspace}:${booking.localId}`, [$("#bookingMenuGenerateInvoice")], async () => {
+    try { await openSagaInvoiceDialog(booking); }
+    catch (error) { showError(error); }
+  });
+});
+
+$("#closeSettingsDialog").addEventListener("click", () => settingsDialog.close());
+$("#cancelSettingsDialog").addEventListener("click", () => settingsDialog.close());
+settingsDialog.addEventListener("close", () => {
+  $("#settingsStatus").textContent = "";
+});
+$("#settingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  await runExclusive("saga-invoice-settings-save", [$("#settingsSubmit")], async () => {
+    try {
+      const saved = await window.marina.saveSagaInvoiceSettings({
+        ...sagaInvoiceSupplierFromForm(form),
+        vatRate: form.elements.vatRate.value
+      });
+      sagaInvoiceSettings = { ...defaultSagaInvoiceSettings(), ...normalizeSagaInvoiceSettings(saved) };
+      applySagaInvoiceSettingsToForm(form);
+      $("#settingsStatus").textContent = "Setările de facturare SAGA au fost salvate.";
+      showToast("Setările de facturare SAGA au fost salvate.", "success");
+    } catch (error) {
+      $("#settingsStatus").textContent = shortErrorMessage(error);
+      showError(error);
+    }
+  });
+});
+
 $("#closePaymentDialog").addEventListener("click", () => {
   paymentDialog.close();
   selectedBookingId = null;
@@ -2989,13 +3078,53 @@ paymentDialog.addEventListener("close", () => {
   selectedBookingView = "";
 });
 
+$("#closeSagaInvoiceDialog").addEventListener("click", () => sagaInvoiceDialog.close());
+$("#cancelSagaInvoiceDialog").addEventListener("click", () => sagaInvoiceDialog.close());
+sagaInvoiceDialog.addEventListener("close", () => {
+  sagaInvoiceDraft = null;
+  if (selectedBookingView !== "invoice") return;
+  selectedBookingId = null;
+  selectedBookingView = "";
+});
+$("#sagaInvoiceForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const draft = sagaInvoiceDraft;
+  if (!draft || selectedBookingView !== "invoice" || selectedBookingId !== draft.booking.localId) return;
+  const missing = [...form.querySelectorAll("[required]")].find((element) => !String(element.value || "").trim());
+  if (missing) {
+    $("#sagaInvoiceStatus").textContent = "Completează toate câmpurile obligatorii pentru emitent și document.";
+    missing.focus();
+    return;
+  }
+  try {
+    const result = window.SagaInvoice.buildSagaInvoice({
+      booking: draft.booking,
+      payment: draft.payment,
+      resource: resourceById(draft.booking.resourceId),
+      supplier: sagaInvoiceSupplierFromForm(form),
+      invoiceNumber: form.elements.invoiceNumber.value.trim(),
+      issueDate: form.elements.issueDate.value,
+      vatRate: form.elements.vatRate.value
+    });
+    downloadTextFile(result.xml, result.filename);
+    sagaInvoiceDialog.close();
+    showToast(`Factura SAGA a fost descărcată: ${result.filename}`, "success");
+  } catch (error) {
+    $("#sagaInvoiceStatus").textContent = shortErrorMessage(error);
+    showError(error);
+  }
+});
+
 $("#bookingMenuSendPayment").addEventListener("click", async () => {
   const booking = bookingById(selectedBookingId);
   if (!booking) return;
   $("#bookingPaymentMenu").hidden = true;
   $("#bookingPaymentMenuToggle").setAttribute("aria-expanded", "false");
-  try { await queuePaymentEmail(booking); }
-  catch (error) { showError(error); }
+  await runExclusive(`payment-request:${activeWorkspace}:${booking.localId}`, [$("#sendPaymentRequest"), $("#bookingMenuSendPayment")], async () => {
+    try { await queuePaymentEmail(booking); }
+    catch (error) { showError(error); }
+  });
 });
 
 $("#bookingMenuStatus").addEventListener("click", async () => {
@@ -3011,8 +3140,7 @@ $("#bookingMenuStatus").addEventListener("click", async () => {
 $("#bookingMenuTrash").addEventListener("click", async () => {
   const booking = bookingById(selectedBookingId);
   if (!booking) return;
-  const action = booking.trashed ? "restabilești rezervarea" : "muți rezervarea la gunoi";
-  if (!confirm(`Confirmi că vrei să ${action}? Rezervarea nu va fi ștearsă definitiv.`)) return;
+  if (!confirm(booking.trashed ? "Confirmi restaurarea rezervării Marina?" : "Confirmi anularea rezervării Marina?")) return;
   const source = activeWorkspace;
   await runExclusive(`booking:${source}:${booking.localId}`, [$("#bookingMenuStatus"), $("#bookingMenuTrash")], async () => { try {
     await runApiAction("setTrash", booking.localId, { trashed: !booking.trashed, sendEmail: false, source });
@@ -3021,26 +3149,6 @@ $("#bookingMenuTrash").addEventListener("click", async () => {
 });
 
 $("#syncIndicator").addEventListener("click", () => { diagnostics.hidden = false; });
-$("#pauseQueue").addEventListener("click", async () => {
-  if (!confirm("Oprești toate acțiunile automate? Comanda aflată deja în curs nu mai poate fi retrasă, dar nu vor începe alte trimiteri.")) return;
-  await runExclusive(`pause-queue:${activeWorkspace}`, [$("#pauseQueue")], async () => {
-    try { await runApiAction("pauseQueue"); }
-    catch (error) { showError(error); }
-  });
-});
-$("#resumeQueue").addEventListener("click", async () => {
-  await runExclusive(`resume-queue:${activeWorkspace}`, [$("#resumeQueue")], async () => {
-    try { await runApiAction("resumeQueue"); }
-    catch (error) { showError(error); }
-  });
-});
-$("#clearQueueIssues").addEventListener("click", async () => {
-  if (!confirm("Anulezi modificările locale eșuate și comenzile care depind de ele? Rezervările vor reveni la ultima stare cunoscută de pe server.")) return;
-  const button = $("#clearQueueIssues");
-  await runExclusive(`clear-failed:${activeWorkspace}`, [button], async () => { try {
-    await runApiAction("clearFailedCommands");
-  } catch (error) { showError(error); } });
-});
 document.addEventListener("click", async (event) => {
   if (!event.target.closest(".booking-payment-menu")) {
     $("#bookingPaymentMenu").hidden = true;
@@ -3058,10 +3166,6 @@ document.addEventListener("click", async (event) => {
       selectedBookingView = "";
     }
   }
-  const retry = event.target.closest("[data-retry-command]");
-  if (retry) { try { await runApiAction("retryCommand", retry.dataset.retryCommand); } catch (error) { showError(error); } }
-  const revert = event.target.closest("[data-revert-booking]");
-  if (revert && confirm("Revii de la modificarea locală nesincronizată la ultima stare cunoscută de pe server?")) { try { await runApiAction("revertBooking", revert.dataset.revertBooking); } catch (error) { showError(error); } }
   const open = event.target.closest("[data-open-booking]");
   if (open) {
     const booking = bookingById(open.dataset.openBooking);
@@ -3073,69 +3177,7 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-$("#openSettings").addEventListener("click", async () => {
-  cancelDrag();
-  const source = activeWorkspace;
-  if (source === "marina") {
-    if (state.settings?.connected && confirm("Deconectezi contul Marina de pe acest dispozitiv?")) {
-      try { applyState(await window.marina.disconnectMarina()); } catch (error) { showError(error); }
-    } else updateMarinaSetupUi();
-    return;
-  }
-  const settings = await window.marina.getSettings(source);
-  if (source !== activeWorkspace) return;
-  settingsWorkspace = source;
-  const form = $("#settingsForm");
-  const camping = source === "camping";
-  $("#settingsSourceLabel").textContent = camping ? "Conexiune camping" : "Conexiune camere";
-  $("#settingsTitle").textContent = camping ? "Setări Camping" : "Setări Camere";
-  form.elements.apiBaseUrl.value = settings.apiBaseUrl || "";
-  form.elements.username.value = settings.username || "";
-  form.elements.password.value = "";
-  form.elements.timezone.value = settings.timezone || "Europe/Bucharest";
-  $("#settingsStatus").textContent = settings.credentialsConfigured ? "Datele de acces sunt stocate în magazinul protejat al sistemului." : "Nu este stocată nicio parolă de aplicație.";
-  settingsDialog.showModal();
-});
-$("#closeSettingsDialog").addEventListener("click", () => { settingsWorkspace = null; settingsDialog.close(); });
-
-$("#settingsForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const source = settingsWorkspace;
-  if (!source || source !== activeWorkspace) { showError(workspaceChangedError()); return; }
-  const payload = { apiBaseUrl: form.elements.apiBaseUrl.value, username: form.elements.username.value, timezone: form.elements.timezone.value, source };
-  if (form.elements.password.value) payload.password = form.elements.password.value;
-  try {
-    const settings = await window.marina.saveSettings(payload);
-    if (source !== activeWorkspace) return;
-    form.elements.password.value = "";
-    $("#settingsStatus").textContent = settings.credentialsConfigured ? "Setările au fost salvate în siguranță." : "Setările au fost salvate; lipsește parola.";
-    settingsWorkspace = null;
-    settingsDialog.close();
-    await refreshRange();
-  } catch (error) { form.elements.password.value = ""; showError(error); }
-});
-
-$("#testConnection").addEventListener("click", async () => {
-  const output = $("#settingsStatus");
-  const form = $("#settingsForm");
-  const source = settingsWorkspace;
-  if (!source || source !== activeWorkspace) { showError(workspaceChangedError()); return; }
-  output.textContent = "Se testează…";
-  try {
-    const result = await runApiAction("testConnection", { apiBaseUrl: form.elements.apiBaseUrl.value, username: form.elements.username.value, password: form.elements.password.value || undefined, timezone: form.elements.timezone.value, source });
-    output.textContent = `Conectat. Au fost găsite ${result.resources} spații.`;
-  }
-  catch (error) { output.textContent = ErrorMessages.message(error); }
-});
-
-$("#clearCredentials").addEventListener("click", async () => {
-  if (!confirm("Ștergi URL-ul API, utilizatorul și parola de aplicație stocate local?")) return;
-  const source = settingsWorkspace;
-  if (!source || source !== activeWorkspace) { showError(workspaceChangedError()); return; }
-  try { await window.marina.clearCredentials(source); $("#settingsForm").reset(); $("#settingsStatus").textContent = "Datele de acces locale au fost șterse."; }
-  catch (error) { showError(error); }
-});
+$("#openSettings").addEventListener("click", () => { void openSettingsDialog(); });
 
 function setVisibleMonth(month) {
   const target = monthStart(month);
@@ -3188,7 +3230,16 @@ window.addEventListener("resize", () => {
   }, 120);
 });
 
-window.marina.onStateChanged(applyState);
+window.marina.onStateChanged((next) => {
+  applyState(next);
+  void processPendingReservationLink();
+});
+if (typeof window.marina.onReservationLink === "function") {
+  window.marina.onReservationLink((link) => {
+    pendingReservationLink = link;
+    void processPendingReservationLink();
+  });
+}
 
 (async function boot() {
   const range = currentRange();
@@ -3199,6 +3250,10 @@ window.marina.onStateChanged(applyState);
     setTimelineScrollLeft(Math.max(0, scrollLeftForDate(focusMonth) - dayWidth * 2));
     lastScrollLeft = timelineShell.scrollLeft;
     if (state.settings.credentialsConfigured && state.settings.apiBaseUrl) await refreshRange({ force: false });
-    else $("#openSettings").click();
+    else await openSettingsDialog({ connectIfNeeded: true });
   } catch (error) { showError(error); }
+  finally {
+    appBootComplete = true;
+    void processPendingReservationLink();
+  }
 })();

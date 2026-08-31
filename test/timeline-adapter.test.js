@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { assignLanes, barSignature, mapState, toItem } = require("../src/shared/timeline-adapter");
 
 test("timeline adapter maps resources to lanes and bookings to bars", () => {
@@ -18,7 +20,7 @@ test("timeline adapter maps resources to lanes and bookings to bars", () => {
   assert.equal(lanes[0].items[0].syncState, "queued");
 });
 
-test("timeline reservation labels show only the WordPress last name", () => {
+test("timeline reservation labels show only the client last name", () => {
   const item = toItem({ localId: "server:11", serverId: 11, resourceId: 4, dates: ["2026-07-20"], startDate: "2026-07-20", endDate: "2026-07-20", formData: { name: { value: "Ana" }, secondname: { value: "Popescu" } }, status: "pending", syncState: "synced" });
   assert.equal(item.title, "Popescu");
 });
@@ -66,4 +68,13 @@ test("booking bar signatures change when the timeline window moves", () => {
   const julyWindow = barSignature(item, 1, "", "2026-03-01", 275);
   const februaryWindow = barSignature(item, 1, "", "2025-10-01", 273);
   assert.notEqual(julyWindow, februaryWindow);
+});
+
+test("Camping renderer uses fetched resources and bookings without synthetic fallback rows", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(source, /function campingParentResources\(\) \{\s*return state\.resources\.filter\(\(resource\) => resource\.active !== false\);\s*\}/);
+  assert.match(source, /function timelineResources\(\) \{\s*return state\.resources;\s*\}/);
+  assert.match(source, /function timelineBookings\(\) \{\s*return state\.bookings;\s*\}/);
+  assert.doesNotMatch(source, /title:\s*["']Corturi["']/);
+  assert.doesNotMatch(source, /title:\s*["']Rulote["']/);
 });

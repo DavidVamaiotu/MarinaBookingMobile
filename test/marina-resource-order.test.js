@@ -27,3 +27,15 @@ test("Marina resources omit the irrelevant 32 entry and preserve Camere migratio
   ]);
   assert.equal(resources.length, 8);
 });
+
+test("Camping keeps a real Marina resource named 32", () => {
+  const resources = [
+    { providerId: "15", title: "Camping pitches" },
+    { providerId: "32", title: "32" }
+  ];
+
+  assert.deepEqual(
+    orderMarinaResources(resources, { ignoreLegacy32: false }).map((resource) => resource.providerId),
+    ["15", "32"]
+  );
+});

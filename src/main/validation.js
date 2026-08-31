@@ -1,7 +1,6 @@
 "use strict";
 
 const { toStayDateTimes } = require("../shared/booking-calendar");
-const PaymentRequest = require("../shared/payment-request");
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_TIME = /^\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
@@ -53,12 +52,21 @@ function formData(value) {
   return result;
 }
 
+function facilityIds(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 64) throw new TypeError("facilityIds trebuie să fie o listă cu cel mult 64 de valori.");
+  const result = value.map(Number);
+  if (result.some((facilityId) => !Number.isSafeInteger(facilityId) || facilityId < 1)) throw new TypeError("facilityIds trebuie să conțină doar numere întregi pozitive.");
+  if (new Set(result).size !== result.length) throw new TypeError("facilityIds nu poate conține valori duplicate.");
+  return result.sort((a, b) => a - b);
+}
+
 function bookingInput(value) {
   value = object(value);
   const resourceId = Number(value.resourceId);
   if (!Number.isInteger(resourceId) || resourceId < 1) throw new TypeError("resourceId trebuie să fie un număr întreg pozitiv.");
   const bookingDates = dates(value.dates);
-  return { resourceId, dates: bookingDates, apiDates: toStayDateTimes(bookingDates), formData: formData(value.formData), bookingFormType: text(value.bookingFormType, "bookingFormType", 80), approved: Boolean(value.approved), sendEmail: Boolean(value.sendEmail), note: text(value.note, "note"), quoteId: value.quoteId === undefined ? "" : text(value.quoteId, "quoteId", 200) };
+  return { resourceId, dates: bookingDates, apiDates: toStayDateTimes(bookingDates), formData: formData(value.formData), facilityIds: facilityIds(value.facilityIds), bookingFormType: text(value.bookingFormType, "bookingFormType", 80), approved: Boolean(value.approved), sendEmail: Boolean(value.sendEmail), note: text(value.note, "note"), quoteId: value.quoteId === undefined ? "" : text(value.quoteId, "quoteId", 200) };
 }
 
 function quoteInput(value) {
@@ -74,6 +82,7 @@ function quoteInput(value) {
     sourceResourceId,
     dates: dates(value.dates),
     formData: formData(value.formData),
+    facilityIds: facilityIds(value.facilityIds),
     bookingFormType: text(value.bookingFormType, "bookingFormType", 80),
     mode,
     forceFresh: Boolean(value.forceFresh)
@@ -89,6 +98,7 @@ function bookingPatch(value) {
   }
   if (value.dates !== undefined) result.dates = dates(value.dates);
   if (value.formData !== undefined) result.formData = formData(value.formData);
+  if (value.facilityIds !== undefined) result.facilityIds = facilityIds(value.facilityIds);
   if (value.bookingFormType !== undefined) result.bookingFormType = text(value.bookingFormType, "bookingFormType", 80);
   if (value.quoteId !== undefined) result.quoteId = text(value.quoteId, "quoteId", 200);
   if (value.status !== undefined) {
@@ -116,17 +126,40 @@ function deposit(value, { requireNote = true } = {}) {
   const total = Number(value.total);
   if (!Number.isFinite(total) || total <= 0 || amount > total) throw new TypeError("Costul verificat trebuie să fie pozitiv și cel puțin egal cu avansul.");
   const note = String(value.note ?? "");
-  if ((requireNote && !note) || note.length > 20000) throw new TypeError("Nota verificată din WordPress este obligatorie și trebuie să aibă cel mult 20000 de caractere.");
+  if ((requireNote && !note) || note.length > 20000) throw new TypeError("Nota rezervării este obligatorie și trebuie să aibă cel mult 20000 de caractere.");
   return { deposit: amount, total, note };
 }
 
-function paymentRequest(value) {
-  return PaymentRequest.validate(object(value));
-}
-
-function settings(value) {
+function marinaPaymentRequest(value) {
   value = object(value);
-  return { apiBaseUrl: text(value.apiBaseUrl, "apiBaseUrl", 500, true), username: text(value.username, "username", 200, true), password: value.password === undefined ? undefined : text(value.password, "password", 500, true), timezone: text(value.timezone || "Europe/Bucharest", "timezone", 100, true) };
+  const bookingId = id(value.bookingId, "bookingId");
+  const idempotencyKey = text(value.idempotencyKey, "Idempotency-Key", 36, true);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idempotencyKey)) throw new TypeError("Idempotency-Key trebuie să fie un UUID v4 valid.");
+  if (value.send_email !== true || value.payment_type !== "deposit" || value.payment_reason !== "Avans rezervare") {
+    throw new TypeError("Cererea de plată Marina este invalidă.");
+  }
+  return { send_email: true, payment_type: "deposit", payment_reason: "Avans rezervare", idempotencyKey, bookingId };
 }
 
-module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, formData, id, object, paymentRequest, quoteInput, range, settings, text };
+function sagaInvoiceSettings(value) {
+  value = object(value, "sagaInvoiceSettings");
+  const result = {
+    name: text(value.name, "Denumirea furnizorului", 200),
+    cif: text(value.cif, "Codul fiscal al furnizorului", 100),
+    regCom: text(value.regCom, "Numărul Registrului Comerțului", 100),
+    address: text(value.address, "Adresa furnizorului", 500),
+    city: text(value.city, "Localitatea furnizorului", 120),
+    county: text(value.county, "Județul furnizorului", 120),
+    phone: text(value.phone, "Telefonul furnizorului", 80),
+    email: text(value.email, "Emailul furnizorului", 320),
+    iban: text(value.iban, "IBAN-ul furnizorului", 100),
+    country: "RO",
+    vatRate: text(value.vatRate ?? "11", "Cota TVA", 12, true)
+  };
+  const vatRate = Number(result.vatRate);
+  if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) throw new TypeError("Cota TVA trebuie să fie între 0 și 100%.");
+  result.vatRate = String(vatRate);
+  return result;
+}
+
+module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, facilityIds, formData, id, marinaPaymentRequest, object, quoteInput, range, sagaInvoiceSettings, text };

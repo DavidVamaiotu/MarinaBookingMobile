@@ -4,7 +4,7 @@ const { EventEmitter } = require("node:events");
 const { createHash, randomUUID } = require("node:crypto");
 const MarinaConfig = require("../shared/marina-config");
 const { customerFromFormData, fieldValue } = require("../shared/marina-customer");
-const { MANUAL_DEPOSIT_FIELD, marinaCustomFieldsWithDeposit, normalizeMarinaPayment } = require("../shared/marina-payment");
+const { MANUAL_DEPOSIT_FIELD, normalizeMarinaPayment } = require("../shared/marina-payment");
 const { normalizeMarinaQuote } = require("../shared/marina-quote");
 const { orderMarinaResources } = require("../shared/marina-resource-order");
 const PricingNote = require("../shared/pricing-note");
@@ -38,7 +38,9 @@ function joinNoteValues(values) {
 
 function noteText(booking) {
   const hasInternalNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note");
-  return joinNoteValues(hasInternalNote ? [booking?.internal_note] : [booking?.note, ...noteBodies(booking)]);
+  if (hasInternalNote) return joinNoteValues([booking?.internal_note]);
+  const primaryNote = String(booking?.note || "").trim();
+  return primaryNote || joinNoteValues(noteBodies(booking));
 }
 
 function externalId(value) {
@@ -143,6 +145,42 @@ function numericProviderResourceId(resource) {
   return value;
 }
 
+function normalizeFacilityIds(values) {
+  const ids = [...new Set((Array.isArray(values) ? values : []).map(Number))].sort((a, b) => a - b);
+  if (ids.length > 64 || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw Object.assign(new Error("Selecția facilităților Marina este invalidă."), { code: "marina_facility_ids_invalid", permanent: true });
+  }
+  return ids;
+}
+
+function normalizeFacility(facility) {
+  const id = Number(facility?.id);
+  if (!Number.isSafeInteger(id) || id < 1) throw Object.assign(new Error("API-ul Marina a returnat o facilitate invalidă."), { code: "marina_invalid_response", permanent: true });
+  const priceMinor = Number(facility.price_per_night_minor ?? facility.pricePerNightMinor);
+  return {
+    id,
+    name: String(facility.name || "").trim(),
+    currency: String(facility.currency || "RON"),
+    billingPeriod: String(facility.billing_period ?? facility.billingPeriod ?? "night"),
+    pricePerNightMinor: Number.isSafeInteger(priceMinor) && priceMinor >= 0 ? priceMinor : 0,
+    appliesToAllResources: facility.applies_to_all_resources === true || facility.appliesToAllResources === true,
+    resourceIds: (facility.resource_ids ?? facility.resourceIds ?? []).map(String),
+    active: facility.active !== false,
+    version: facility.version ?? null
+  };
+}
+
+function normalizeFacilitySnapshots(booking) {
+  if (Array.isArray(booking?.facilities)) return booking.facilities.map((facility) => ({
+    id: Number(facility.id ?? facility.facility_id),
+    name: String(facility.name || ""),
+    currency: String(facility.currency || "RON"),
+    billingPeriod: String(facility.billing_period ?? facility.billingPeriod ?? "night"),
+    pricePerNightMinor: Number(facility.price_per_night_minor ?? facility.pricePerNightMinor) || 0
+  })).filter((facility) => Number.isSafeInteger(facility.id) && facility.id > 0);
+  return normalizeFacilityIds(booking?.facility_ids).map((id) => ({ id }));
+}
+
 function quoteBody(input, resources) {
   const resource = resources.find((item) => Number(item.id) === Number(input.resourceId));
   if (!resource) throw Object.assign(new Error("Resursa Marina selectată nu mai este disponibilă."), { code: "marina_resource_missing", permanent: true });
@@ -154,7 +192,8 @@ function quoteBody(input, resources) {
     guests: {
       adults: Number(field(input.formData, "visitors")) || 1,
       children: Number(field(input.formData, "children")) || 0
-    }
+    },
+    facility_ids: normalizeFacilityIds(input.facilityIds)
   };
 }
 
@@ -169,10 +208,13 @@ function pricingChanged(current, next) {
   const nextAdults = Number(field(next.formData, "visitors")) || 1;
   const currentChildren = Number(field(current.formData, "children")) || 0;
   const nextChildren = Number(field(next.formData, "children")) || 0;
+  const currentFacilities = normalizeFacilityIds(current.facilityIds ?? current.facilities?.map((facility) => facility.id));
+  const nextFacilities = normalizeFacilityIds(next.facilityIds ?? next.facilities?.map((facility) => facility.id));
   return Number(current.resourceId) !== Number(next.resourceId)
     || !sameDates(current.dates, next.dates)
     || currentAdults !== nextAdults
-    || currentChildren !== nextChildren;
+    || currentChildren !== nextChildren
+    || !sameDates(currentFacilities, nextFacilities);
 }
 
 function normalizeResource(resource) {
@@ -183,11 +225,15 @@ function normalizeResource(resource) {
     providerId,
     title: String(resource.title || resource.name || resource.label || `Marina ${providerId}`),
     capacity: Number(resource.capacity) || null,
+    capacityMode: String(resource.capacity_mode ?? resource.capacityMode ?? "exclusive"),
+    capacityUnitMode: String(resource.capacity_unit_mode ?? resource.capacityUnitMode ?? "per_booking"),
     baseCost: resource.base_cost ?? resource.baseCost ?? null,
     defaultForm: "marina",
     bookingMode: String(resource.booking_mode ?? resource.bookingMode ?? "date_range"),
     timezone: resource.timezone || "Europe/Bucharest",
-    active: resource.active !== false
+    active: resource.active !== false,
+    settings: resource.settings && typeof resource.settings === "object" ? { ...resource.settings } : {},
+    version: resource.version ?? null
   };
 }
 
@@ -255,6 +301,9 @@ function normalizeBooking(booking, resources) {
       ? addDays(datePart(flattenedTimedEnd), 1)
       : timedEndDatePart(flattenedTimedEnd) ?? start;
   const status = String(booking.status || "pending").toLowerCase();
+  const trashValue = booking.trash ?? booking.trashed;
+  const explicitTrash = trashValue === true || trashValue === 1 || ["1", "true", "trash", "trashed"].includes(String(trashValue || "").trim().toLowerCase());
+  const facilities = normalizeFacilitySnapshots(booking);
   return {
     localId: `marina:${providerId}`,
     serverId: providerId,
@@ -265,9 +314,11 @@ function normalizeBooking(booking, resources) {
     resourceId: resource?.id || uiId(providerResourceId),
     status: ["approved", "confirmed", "active", "completed"].includes(status) ? "approved" : "pending",
     providerStatus: status,
-    trashed: ["trash", "cancelled", "canceled", "deleted"].includes(status),
+    trashed: explicitTrash || ["trash", "cancelled", "canceled", "deleted"].includes(status),
     note: noteText(booking),
     price: booking.price && typeof booking.price === "object" ? { ...booking.price } : null,
+    facilities,
+    facilityIds: facilities.map((facility) => facility.id),
     formData: normalizedFormData(booking),
     dates: periodDates.length ? [...new Set(periodDates)].sort() : dateRange(start, end),
     syncState: "synced",
@@ -283,26 +334,29 @@ function bookingBody(input, resources) {
     customer: customerFromFormData(input.formData),
     guests: quote.guests,
     custom_fields: {},
-    internal_note: String(input.note || "")
+    internal_note: String(input.note || ""),
+    send_email: Boolean(input.sendEmail)
   };
   if (input.quoteId) body.quote_id = String(input.quoteId);
   return body;
 }
 
 function bookingPatchBody(current, patch, resources) {
-  const merged = { ...current, ...patch, formData: patch.formData || current.formData, dates: patch.dates || current.dates };
+  const merged = { ...current, ...patch, formData: patch.formData || current.formData, dates: patch.dates || current.dates, facilityIds: patch.facilityIds ?? current.facilityIds };
   const body = {};
   if (pricingChanged(current, merged)) {
     const quote = quoteBody(merged, resources);
     body.resource_id = quote.resource_id;
     body.periods = quote.periods;
     body.guests = quote.guests;
+    body.facility_ids = quote.facility_ids;
     if (patch.quoteId) body.quote_id = String(patch.quoteId);
   }
   const previousCustomer = customerFromFormData(current.formData);
   const nextCustomer = customerFromFormData(merged.formData);
   if (JSON.stringify(previousCustomer) !== JSON.stringify(nextCustomer)) body.customer = nextCustomer;
   if (String(current.note || "") !== String(merged.note || "")) body.internal_note = String(merged.note || "");
+  if (Object.prototype.hasOwnProperty.call(patch, "sendEmail")) body.send_email = Boolean(patch.sendEmail);
   return body;
 }
 
@@ -314,15 +368,21 @@ class MarinaBookingProvider extends EventEmitter {
     this.api = api;
     this.visibleRange = null;
     this.cacheStore = cacheStore;
-    const cached = cacheStore?.load?.() || {};
+    const loadedCache = cacheStore?.load?.() || {};
+    const expectedWorkspaceSlug = config.workspaceSlug || api.workspaceSlug || "";
+    const cached = !expectedWorkspaceSlug || loadedCache.workspaceSlug === undefined || loadedCache.workspaceSlug === expectedWorkspaceSlug ? loadedCache : {};
     this.resources = Array.isArray(cached.resources) ? cached.resources : [];
+    this.facilities = Array.isArray(cached.facilities) ? cached.facilities : [];
     this.bookings = Array.isArray(cached.bookings) ? cached.bookings : [];
     this.lastSuccessfulSync = cached.lastSuccessfulSync || null;
+    this.noteOverrides = new Map(Object.entries(cached.noteOverrides && typeof cached.noteOverrides === "object" ? cached.noteOverrides : {}));
+    this.manualDepositOverrides = new Map(Object.entries(cached.manualDepositOverrides && typeof cached.manualDepositOverrides === "object" ? cached.manualDepositOverrides : {})
+      .map(([providerId, minor]) => [providerId, Number(minor)])
+      .filter(([, minor]) => Number.isInteger(minor) && minor >= 0));
     this.online = false;
     this.refreshInFlight = null;
     this.refreshTimer = null;
     this.noteRequests = new Map();
-    this.noteOverrides = new Map();
     oauth.on("changed", () => this.emitState());
   }
 
@@ -349,6 +409,8 @@ class MarinaBookingProvider extends EventEmitter {
       oauthScopes: oauth.effectiveScopes.join(" "),
       capabilities,
       apiBaseUrl: this.config.apiBaseUrl,
+      workspaceId: this.api.workspaceId ?? this.config.workspaceId ?? null,
+      workspaceSlug: this.config.workspaceSlug || this.api.workspaceSlug || "",
       configurationError: this.config.configurationError,
       timezone: "Europe/Bucharest",
       connectionStatus: oauth.connected ? "connected" : oauth.connecting ? "connecting" : this.config.configured ? "disconnected" : "disabled"
@@ -361,6 +423,7 @@ class MarinaBookingProvider extends EventEmitter {
     return {
       provider: "marina",
       resources: [...this.resources],
+      facilities: [...this.facilities],
       bookings: this.bookings.filter((item) => item.dates.some((date) => date >= dates.start && date <= dates.end)),
       commands: [],
       diagnostics: { provider: "marina", online: this.online, authPaused: !connected, queued: 0, sending: 0, failed: 0, conflicts: 0, lastSuccessfulSync: this.lastSuccessfulSync },
@@ -370,6 +433,19 @@ class MarinaBookingProvider extends EventEmitter {
   }
   emitState() { this.emit("state", this.state()); }
 
+  persistCache(bookings = this.bookings) {
+    this.cacheStore?.save?.({
+      workspaceId: this.api.workspaceId ?? this.config.workspaceId ?? null,
+      workspaceSlug: this.config.workspaceSlug || this.api.workspaceSlug || "",
+      resources: this.resources,
+      facilities: this.facilities,
+      bookings,
+      lastSuccessfulSync: this.lastSuccessfulSync,
+      noteOverrides: Object.fromEntries(this.noteOverrides),
+      manualDepositOverrides: Object.fromEntries(this.manualDepositOverrides)
+    });
+  }
+
   storeMutationBooking(booking, options = {}) {
     if (Object.prototype.hasOwnProperty.call(options, "noteOverride")) {
       this.noteOverrides.set(booking.providerId, String(options.noteOverride ?? ""));
@@ -378,7 +454,7 @@ class MarinaBookingProvider extends EventEmitter {
     const index = this.bookings.findIndex((item) => item.localId === booking.localId);
     if (index === -1) this.bookings = [...this.bookings, booking];
     else this.bookings = this.bookings.map((item, itemIndex) => itemIndex === index ? booking : item);
-    this.cacheStore?.save?.({ resources: this.resources, bookings: this.bookings, lastSuccessfulSync: this.lastSuccessfulSync });
+    this.persistCache();
     this.emitState();
     return booking;
   }
@@ -425,6 +501,8 @@ class MarinaBookingProvider extends EventEmitter {
         children: Number(field(booking.formData, "children")) || 0
       },
       internal_note: booking.note || "",
+      facilities: booking.facilities || [],
+      facility_ids: normalizeFacilityIds(booking.facilityIds),
       version: booking.version
     };
   }
@@ -433,10 +511,13 @@ class MarinaBookingProvider extends EventEmitter {
   async disconnect() {
     await this.oauth.disconnect();
     this.resources = [];
+    this.facilities = [];
     this.bookings = [];
     this.online = false;
     this.lastSuccessfulSync = null;
-    this.cacheStore?.save?.({ resources: [], bookings: [], lastSuccessfulSync: null });
+    this.noteOverrides.clear();
+    this.manualDepositOverrides.clear();
+    this.persistCache([]);
     return this.state();
   }
 
@@ -449,13 +530,16 @@ class MarinaBookingProvider extends EventEmitter {
         const capabilities = this.settings().capabilities;
         if (!capabilities.resourcesRead) {
           this.resources = [];
+          this.facilities = [];
           this.bookings = [];
           this.online = true;
           this.emitState();
           return this.state(range);
         }
         const resourcesResponse = await this.api.resources();
-        this.resources = orderMarinaResources(collection(resourcesResponse.payload, ["resources"]).map(normalizeResource));
+        this.resources = orderMarinaResources(collection(resourcesResponse.payload, ["resources"]).map(normalizeResource), { ignoreLegacy32: this.config.workspaceSlug !== "camping" });
+        const facilitiesResponse = typeof this.api.facilities === "function" ? await this.api.facilities() : { payload: { data: [] } };
+        this.facilities = collection(facilitiesResponse.payload, ["facilities"]).map(normalizeFacility);
         const loaded = [];
         if (capabilities.bookingsRead) {
           let after = null;
@@ -464,14 +548,14 @@ class MarinaBookingProvider extends EventEmitter {
           do {
           const response = await this.api.bookings({ from, to, after, limit: 200 });
             loaded.push(...collection(response.payload, ["bookings"]));
-            this.cacheStore?.save?.({ resources: this.resources, bookings: this.normalizeBookings(loaded), lastSuccessfulSync: this.lastSuccessfulSync });
+            this.persistCache(this.normalizeBookings(loaded));
             after = response.payload?.next_cursor ?? response.payload?.pagination?.next_cursor ?? response.payload?.meta?.next_cursor ?? null;
           } while (after);
         }
         this.bookings = this.normalizeBookings(loaded);
         this.online = true;
         this.lastSuccessfulSync = new Date().toISOString();
-        this.cacheStore?.save?.({ resources: this.resources, bookings: this.bookings, lastSuccessfulSync: this.lastSuccessfulSync });
+        this.persistCache();
         const result = this.state(range);
         this.emit("state", result);
         return result;
@@ -518,14 +602,14 @@ class MarinaBookingProvider extends EventEmitter {
     });
     let merged = merge([]);
     this.bookings = this.bookings.map((booking) => booking.localId === merged.localId ? merged : booking);
-    this.cacheStore?.save?.({ resources: this.resources, bookings: this.bookings, lastSuccessfulSync: this.lastSuccessfulSync });
+    this.persistCache();
     this.emitState();
     const fetchedNotes = await notesPromise;
     const withNotes = merge(fetchedNotes);
     if (withNotes.note !== merged.note) {
       merged = withNotes;
       this.bookings = this.bookings.map((booking) => booking.localId === merged.localId ? merged : booking);
-      this.cacheStore?.save?.({ resources: this.resources, bookings: this.bookings, lastSuccessfulSync: this.lastSuccessfulSync });
+      this.persistCache();
       this.emitState();
     }
     return merged;
@@ -558,19 +642,21 @@ class MarinaBookingProvider extends EventEmitter {
     let mutationBody;
     try {
       if (type === "status") {
-        mutationBody = { status: patch.status };
+        mutationBody = { status: patch.status, send_email: Boolean(patch.sendEmail) };
         response = await this.api.changeBookingStatus(booking.providerId, mutationBody, randomUUID(), booking.version);
       }
       else if (type === "trash") {
-        if (!patch.trashed) throw Object.assign(new Error("O rezervare Marina anulată nu poate fi restaurată din acest calendar."), { code: "marina_restore_unsupported", permanent: true });
-        mutationBody = { status: "cancelled" };
-        response = await this.api.cancelBooking(booking.providerId, {}, randomUUID(), booking.version);
+        const trashed = Boolean(patch.trashed);
+        mutationBody = { status: trashed ? "cancelled" : "pending", send_email: Boolean(patch.sendEmail) };
+        response = trashed
+          ? await this.api.cancelBooking(booking.providerId, { send_email: mutationBody.send_email }, randomUUID(), booking.version)
+          : await this.api.changeBookingStatus(booking.providerId, mutationBody, randomUUID(), booking.version);
       } else if (type === "note") {
         mutationBody = { internal_note: String(patch.note ?? "") };
         response = await this.api.updateBooking(booking.providerId, mutationBody, randomUUID(), booking.version);
       }
       else {
-        const merged = { ...booking, ...patch, formData: patch.formData || booking.formData, dates: patch.dates || booking.dates };
+        const merged = { ...booking, ...patch, formData: patch.formData || booking.formData, dates: patch.dates || booking.dates, facilityIds: patch.facilityIds ?? booking.facilityIds };
         const repricing = pricingChanged(booking, merged);
         if (repricing && !patch.quoteId) throw Object.assign(new Error("Modificarea prețului Marina necesită o cotație nouă."), { code: "marina_quote_required", permanent: true });
         const finalPatch = repricing
@@ -627,6 +713,18 @@ class MarinaBookingProvider extends EventEmitter {
       fallbackEmail: field(booking.formData, "email")
     });
     if (this.noteOverrides.has(booking.providerId)) snapshot.note = this.noteOverrides.get(booking.providerId);
+    if (this.manualDepositOverrides.has(booking.providerId)) {
+      const minor = this.manualDepositOverrides.get(booking.providerId);
+      const deposit = Number((minor / 100).toFixed(2));
+      if (snapshot.deposit !== null && snapshot.deposit !== undefined && Math.abs(snapshot.deposit - deposit) < 0.005) {
+        this.manualDepositOverrides.delete(booking.providerId);
+        this.persistCache();
+      } else {
+        snapshot.manual_deposit = deposit;
+        snapshot.deposit = deposit;
+        if (Number.isFinite(snapshot.total)) snapshot.balance = Number((snapshot.total - deposit).toFixed(2));
+      }
+    }
     return snapshot;
   }
   async updateDeposit(localId, input = {}) {
@@ -638,12 +736,15 @@ class MarinaBookingProvider extends EventEmitter {
     }
     const latestResponse = await this.api.payment(booking.providerId);
     const latestRecord = latestResponse?.payload?.data?.booking || latestResponse?.payload?.data || latestResponse?.payload?.booking || latestResponse?.payload || {};
-    const customFields = marinaCustomFieldsWithDeposit(latestResponse?.payload, { deposit, total });
+    const depositMinor = Math.round(deposit * 100);
+    if (!Number.isSafeInteger(depositMinor)) {
+      throw Object.assign(new Error("Avansul este prea mare."), { code: "invalid_deposit", permanent: true });
+    }
     const currentNote = String(this.noteOverrides.has(booking.providerId)
       ? this.noteOverrides.get(booking.providerId)
       : input.note ?? booking.note ?? "");
     const nextNote = PricingNote.update(currentNote, deposit, total).note;
-    const body = { custom_fields: customFields, internal_note: nextNote };
+    const body = { deposit_minor: depositMinor, send_email: false };
     let response;
     try {
       response = await this.api.updateDeposit(booking.providerId, body, randomUUID(), latestRecord.version ?? booking.version);
@@ -655,30 +756,37 @@ class MarinaBookingProvider extends EventEmitter {
       throw error;
     }
     const returned = response?.payload?.data?.booking || response?.payload?.data || response?.payload?.booking || response?.payload || {};
-    const returnedCustomFields = {
-      ...customFields,
-      ...(returned?.custom_fields || returned?.customFields || {}),
-      [MANUAL_DEPOSIT_FIELD]: customFields[MANUAL_DEPOSIT_FIELD]
-    };
-    const payment = normalizeMarinaPayment({ data: { ...returned, custom_fields: returnedCustomFields, note: nextNote, internal_note: nextNote } }, {
+    const returnedDepositMinor = Number(returned?.price?.deposit_minor ?? returned?.deposit_minor);
+    const responseMatchesDeposit = !Number.isSafeInteger(returnedDepositMinor) || returnedDepositMinor === depositMinor;
+    const returnedNote = responseMatchesDeposit
+      ? String(returned?.internal_note ?? returned?.note ?? nextNote)
+      : nextNote;
+    const totalMinor = Math.round(total * 100);
+    const optimisticPrice = (latestRecord?.price || booking.price)
+      ? { ...(latestRecord?.price || booking.price), total_minor: totalMinor, deposit_minor: depositMinor, balance_minor: totalMinor - depositMinor }
+      : undefined;
+    const returnedPrice = responseMatchesDeposit ? returned?.price : undefined;
+    const updatedRecord = { ...latestRecord, ...returned, internal_note: returnedNote, ...(returnedPrice || optimisticPrice ? { price: returnedPrice || optimisticPrice } : {}) };
+    this.manualDepositOverrides.set(booking.providerId, depositMinor);
+    const payment = normalizeMarinaPayment({ data: updatedRecord }, {
       bookingId: booking.providerId,
-      fallbackNote: nextNote,
+      fallbackNote: returnedNote,
       fallbackEmail: field(booking.formData, "email")
     });
+    payment.manual_deposit = deposit;
+    payment.deposit = deposit;
+    payment.balance = Number((total - deposit).toFixed(2));
     const updated = this.storeMutationBooking(normalizeBooking({
-      id: booking.providerId,
+      ...updatedRecord,
       resource_id: latestRecord.resource_id ?? booking.providerResourceId,
       periods: latestRecord.periods ?? [stayPeriod(booking.dates)],
       status: latestRecord.status ?? booking.providerStatus,
       customer: latestRecord.customer,
       guests: latestRecord.guests,
-      ...returned,
       id: booking.providerId,
-      custom_fields: returnedCustomFields,
-      price: returned?.price || latestRecord.price || booking.price,
-      internal_note: nextNote,
+      internal_note: returnedNote,
       version: returned?.version ?? payment.version ?? payment.etag ?? booking.version
-    }, this.resources), { noteOverride: nextNote });
+    }, this.resources), { noteOverride: returnedNote });
     this.refreshAfterMutation();
     return {
       ...payment,
@@ -688,10 +796,31 @@ class MarinaBookingProvider extends EventEmitter {
       note: updated.note
     };
   }
-  requestPayment() { throw Object.assign(new Error("Emailul de plată Marina va fi implementat ulterior."), { code: "marina_feature_unsupported", permanent: true }); }
+  async requestPayment(localId, input = {}) {
+    const booking = this.bookings.find((candidate) => candidate.localId === localId);
+    const bookingId = input.bookingId ?? booking?.providerId;
+    if (bookingId === undefined || bookingId === null || String(bookingId).trim() === "") {
+      throw Object.assign(new Error("Rezervarea nu are un ID Marina valid."), { code: "marina_booking_id_missing", permanent: true });
+    }
+    const idempotencyKey = String(input.idempotencyKey || "").trim() || randomUUID();
+    let response;
+    try {
+      response = await this.api.requestPayment(bookingId, {
+        send_email: true,
+        payment_type: "deposit",
+        payment_reason: "Avans rezervare"
+      }, idempotencyKey);
+    } catch (error) {
+      if (error?.status === 403 || /insufficient/i.test(error?.message || "")) {
+        throw Object.assign(new Error("Utilizatorul conectat nu are permisiunile necesare pe serverul Marina pentru trimiterea emailurilor de plată."), { code: "marina_insufficient_permissions", auth: true, permanent: true, cause: error });
+      }
+      throw error;
+    }
+    return response?.payload || { status: "queued", booking_id: Number(bookingId) || bookingId, event: "booking.payment_requested" };
+  }
   retry() { throw Object.assign(new Error("Marina nu folosește coada providerului existent."), { code: "marina_feature_unsupported", permanent: true }); }
   revert() { return this.retry(); }
   clearFailedCommands() { return 0; }
 }
 
-module.exports = { MarinaBookingProvider, bookingBody, bookingPatchBody, collection, normalizeBooking, normalizeResource, pricingChanged, quoteBody, sameDates, uiId };
+module.exports = { MarinaBookingProvider, bookingBody, bookingPatchBody, collection, normalizeBooking, normalizeFacility, normalizeFacilityIds, normalizeResource, pricingChanged, quoteBody, sameDates, uiId };

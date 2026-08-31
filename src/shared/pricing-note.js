@@ -8,6 +8,7 @@
   const AMOUNT = "(?:\\d+\\.\\d{1,2}|\\d+(?:[.\\s]\\d{3})*(?:,\\d{1,2})?)";
   const PRICING_LINE = new RegExp(`Cost total:\\s*(${AMOUNT})\\s*RON,\\s*Depozit:\\s*(${AMOUNT})\\s*RON,\\s*Rest:\\s*(${AMOUNT})\\s*RON(?![\\d.,])`, "i");
   const LEGACY_PRICING_LINE = new RegExp(`Avans:\\s*(${AMOUNT}),\\s*Cost:\\s*(${AMOUNT}),\\s*Rest:\\s*(${AMOUNT})(?![\\d.,])`, "i");
+  const ANY_PRICING_LINE = new RegExp(`(?:${PRICING_LINE.source})|(?:${LEGACY_PRICING_LINE.source})`, "gi");
 
   function parseAmount(value) {
     const normalized = String(value ?? "").trim().replace(/\s+/g, "").replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
@@ -47,7 +48,15 @@
     const balance = Math.round((savedTotal - nextDeposit) * 100) / 100;
     const line = format({ total: savedTotal, deposit: nextDeposit, balance });
     const current = String(note || "");
-    const updatedNote = `${current.slice(0, currentPricing.index)}${line}${current.slice(currentPricing.index + currentPricing.text.length)}`;
+    let inserted = false;
+    const updatedNote = current.replace(ANY_PRICING_LINE, (match, ...args) => {
+      const offset = args.at(-2);
+      if (!inserted && offset === currentPricing.index && match === currentPricing.text) {
+        inserted = true;
+        return line;
+      }
+      return "";
+    }).replace(/(?:[ \t]*\r?\n){3,}/g, "\n\n").trim();
     return { note: updatedNote, deposit: nextDeposit, total: savedTotal, balance, line };
   }
 

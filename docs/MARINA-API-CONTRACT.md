@@ -1,64 +1,69 @@
-# Marina Booking API integration contract
+# Contract de integrare Marina Booking API
 
-The typed endpoint contract supplied with this integration is authoritative. The server does not
-publish `/docs`, `/openapi.json`, or `/v1/openapi.json`; the application must not probe those paths
-or block Marina on OpenAPI/Swagger discovery.
+Documentația furnizată pentru `/v1/*` este autoritatea contractului. Aplicația nu sondează rute
+OpenAPI/Swagger.
 
-Authentication always runs before protected API access:
+## Autentificare
 
-1. Discover OAuth metadata at `/.well-known/oauth-authorization-server`.
-2. Open Authorization Code with PKCE S256 in the system browser.
-3. Exchange the callback code at the discovered `/oauth/token` endpoint.
-4. Send only the returned access token as `Authorization: Bearer ACCESS_TOKEN`.
+Accesul protejat folosește OAuth Authorization Code cu PKCE S256. Fiecare cerere `/v1/*` trimite:
 
-`MARINA_OAUTH_CLIENT_ID` is a public OAuth client identifier. It belongs in authorization and token
-request parameters, never in the `Authorization` header. Access tokens stay in memory; refresh
-tokens are stored with the platform secure-storage service and replaced after successful rotation.
+```http
+Authorization: Bearer <access_token>
+```
 
-The provider uses the supplied `/v1/resources`, calendar, availability, booking, cancellation,
-status, read-marker, and note endpoints. Cursor pagination is capped at 200 records per request.
-Booking dates are nested in `periods`; top-level `start_date` and `end_date` are invalid. Date-only
-`end_date` values are inclusive and are not converted through the workstation timezone. Timed
-periods use RFC3339 `start_at`/`end_at` values and retain their offsets. Note mutations use a
-non-blank `body` field.
+Access token-ul rămâne în memorie. Refresh token-ul este criptat prin mecanismul securizat al
+platformei și este înlocuit după rotație.
 
-The deployed API has no resource PATCH or DELETE route. Resource editing/deletion must not be
-invented client-side and requires a backend capability. Booking removal is status-based (`trash`
-or `cancelled`); there is no hard-delete booking route.
+## Selectarea workspace-ului
 
-An unauthenticated 401 is expected and does not indicate an incompatible API. The application does
-not perform protected contract probes before OAuth completes. After authentication,
-`GET /v1/resources` returning an empty `data` array is a valid connected state.
+Aplicația expune doar Camere și Camping. Configurația poate furniza ID-urile prin
+`MARINA_ROOMS_WORKSPACE_ID` și `MARINA_CAMPING_WORKSPACE_ID`.
 
-Rooms, Camping, and Marina retain separate stores and IDs. Normal calendar mutations are sent only
-to the provider that was active when the operation began; there is no mirroring, dual-write,
-automatic fallback, or customer-data diagnostic logging.
+Dacă un ID lipsește, clientul apelează:
 
-The explicit **Importă Camere** operation in the Marina Calendar tab is the sole migration
-exception. It requires all four scopes (`resources:read resources:write bookings:read
-bookings:write`), reads Rooms resources and bookings from WordPress only, and reads prices from the
-allowlisted public page
-`https://www.marinapark.ro/preturi-cazare-camping/`. It never calls the WordPress price calculator
-and writes only to Marina. The public page is parsed for Camera dubla, Camera Cvadrupla, Camera
-dubla in bungalow, Camera dubla in bungalow superior, and Glamping; each published date is
-normalized to integer bani and verified against the generated inclusive Marina seasons before the
-first pricing PUT.
+```http
+GET /v1/workspaces
+Authorization: Bearer <access_token>
+```
 
-A durable source-ID journal, pricing hashes, versions, verification results, and deterministic
-idempotency keys make the import resumable without duplicating completed resources, pricing, or
-bookings. The journal contains IDs and progress metadata, not customer data. After migration,
-Marina quotes, availability, booking writes, and pricing screens use Marina only; there is no
-WordPress pricing fallback. The current public page publishes the 2026 season
-(2026-04-17 through 2026-09-30); dates not published by the page are not invented.
+Această cerere nu include `X-Workspace-ID`. Sunt considerate doar workspace-urile active. Camping
+se rezolvă după slug `camping`. Camere se rezolvă după `rooms`, apoi `camere`, `default` sau
+workspace-ul marcat `is_default`.
 
-Marina pricing uses `POST /v1/quotes` and quote-bound booking writes. The application displays
-integer-minor totals, a 30% deposit, balance, nights, and the nightly breakdown without copying
-`price_note` into booking notes. The Avans popup reads the server snapshot through
-`GET /v1/bookings/{id}` and reads the booking's authoritative `price` object. A manually selected
-client deposit is stored through the existing idempotent, version-guarded `PATCH /v1/bookings/{id}`
-operation in the namespaced `custom_fields.parkline_manual_deposit_minor` value. It also replaces
-only the canonical pricing line inside `internal_note` (`Cost total`, `Depozit`, `Rest`) and
-preserves all other note text. The popup overlays that per-booking value on the quote snapshot and
-recalculates the displayed balance without mutating Marina's server-authoritative quote pricing.
-Payment-email operations remain intentionally unavailable until their Marina contract is added.
-Resource administration remains hidden without `resources:write`.
+După rezolvare, fiecare cerere scoped trimite:
+
+```http
+X-Workspace-ID: <workspace_id>
+```
+
+`workspace_id` nu este inclus în corpurile cererilor de resurse, rezervări, disponibilitate,
+cotații, prețuri, avans sau cereri de plată. Un `404` este tratat în contextul workspace-ului activ,
+fără fallback către alt workspace.
+
+## Izolarea datelor
+
+Camere și Camping au clienți și snapshot-uri cache separate. Nu există mirroring, dual-write,
+schimbare automată de provider sau migrare. ID-urile egale din cele două workspace-uri rămân izolate.
+
+## Rezervări și prețuri
+
+Resursele se citesc din `GET /v1/resources`, iar rezervările din `GET /v1/bookings`, cu paginare de
+maximum 200 de înregistrări. Cotațiile folosesc `POST /v1/quotes`; scrierile de rezervare folosesc
+quote-ul confirmat și versiunea curentă.
+
+Avansul se actualizează prin `PATCH /v1/bookings/{id}` cu `deposit_minor`, versiunea așteptată și
+`send_email: false`. Emailul de plată este o acțiune explicită separată:
+
+```http
+POST /v1/admin/bookings/{id}/payment-request
+Idempotency-Key: <uuid-v4>
+Content-Type: application/json
+
+{
+  "send_email": true,
+  "payment_type": "deposit",
+  "payment_reason": "Avans rezervare"
+}
+```
+
+Clientul nu trimite o sumă în cererea de plată; serverul folosește avansul curent al rezervării.

@@ -16,7 +16,7 @@ for (const filename of ["index.html", "app.js", "styles.css"]) {
 for (const directory of ["assets", "fonts"]) {
   cpSync(path.join(root, directory), path.join(output, directory), { recursive: true });
 }
-for (const filename of ["error-messages.js", "booking-fields.js", "pricing-note.js", "timeline-adapter.js", "booking-calendar.js", "availability-timeline.js", "payment-request.js", "camera-transform.js", "timeline-sticky-labels.js"]) {
+for (const filename of ["error-messages.js", "booking-fields.js", "pricing-note.js", "saga-invoice.js", "timeline-adapter.js", "booking-calendar.js", "availability-timeline.js", "camera-transform.js", "timeline-sticky-labels.js"]) {
   cpSync(path.join(root, "src", "shared", filename), path.join(output, "src", "shared", filename));
 }
 
@@ -38,7 +38,9 @@ esbuild.buildSync({
     __MARINA_INTEGRATION_ENABLED__: JSON.stringify(process.env.MARINA_INTEGRATION_ENABLED || "false"),
     __MARINA_API_BASE_URL__: JSON.stringify(process.env.MARINA_API_BASE_URL || "https://booking.husi.ro"),
     __MARINA_OAUTH_CLIENT_ID__: JSON.stringify(process.env.MARINA_OAUTH_CLIENT_ID || ""),
-    __MARINA_OAUTH_SCOPES__: JSON.stringify(process.env.MARINA_OAUTH_SCOPES || "resources:read resources:write bookings:read bookings:write")
+    __MARINA_OAUTH_SCOPES__: JSON.stringify(process.env.MARINA_OAUTH_SCOPES || "resources:read resources:write bookings:read bookings:write"),
+    __MARINA_ROOMS_WORKSPACE_ID__: JSON.stringify(process.env.MARINA_ROOMS_WORKSPACE_ID || ""),
+    __MARINA_CAMPING_WORKSPACE_ID__: JSON.stringify(process.env.MARINA_CAMPING_WORKSPACE_ID || "")
   },
   minify: true,
   legalComments: "none"

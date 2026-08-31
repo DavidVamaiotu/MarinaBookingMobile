@@ -3,7 +3,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
-const sources = new Set(["rooms", "camping", "marina"]);
+const sources = new Set(["rooms", "camping"]);
 let currentSource = "rooms";
 
 function setSource(source) {
@@ -31,25 +31,12 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   checkAvailability: (input) => invoke("booking:availability", sourceFor(input), input),
   quoteBooking: (input) => invoke("booking:quote", sourceFor(input), input),
   clearQuoteCache: () => invoke("booking:quote-clear", currentSource),
-  retryCommand: (id) => invoke("queue:retry", currentSource, id),
-  revertBooking: (id) => invoke("queue:revert", currentSource, id),
-  clearFailedCommands: () => invoke("queue:clear-failed", currentSource),
-  pauseQueue: () => invoke("queue:pause", currentSource),
-  resumeQueue: () => invoke("queue:resume", currentSource),
   getSettings: (source = currentSource) => invoke("settings:get", sources.has(source) ? source : currentSource),
-  saveSettings: (input) => invoke("settings:save", sourceFor(input), input),
-  testConnection: (input) => invoke("settings:test", sourceFor(input), input),
+  getSagaInvoiceSettings: () => invoke("saga-invoice-settings:get"),
+  saveSagaInvoiceSettings: (input) => invoke("saga-invoice-settings:save", input),
   clearCredentials: (source = currentSource) => invoke("settings:clear", sources.has(source) ? source : currentSource),
   connectMarina: () => invoke("marina:connect"),
   disconnectMarina: () => invoke("marina:disconnect"),
-  getMarinaMigrationStatus: () => invoke("marina:migration-status"),
-  previewMarinaMigration: () => invoke("marina:migration-preview"),
-  runMarinaMigration: () => invoke("marina:migration-run"),
-  onMarinaMigrationProgress: (callback) => {
-    const listener = (_event, status) => callback(status);
-    ipcRenderer.on("marina:migration-progress", listener);
-    return () => ipcRenderer.removeListener("marina:migration-progress", listener);
-  },
   onStateChanged: (callback) => {
     const listener = (_event, payload) => { if (payload?.source === currentSource) callback(payload.state); };
     ipcRenderer.on("state:changed", listener);

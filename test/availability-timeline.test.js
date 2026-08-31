@@ -134,5 +134,5 @@ test("availability rerenders and refreshes preserve the horizontal anchor", () =
   assert.match(renderSource, /availabilityGrid\.scrollLeft = Math\.max\(0, previousLeft\)/);
   assert.match(app, /const nextLeft = Math\.max\(0, oldLeft - actualDelta \* availabilityDayWidth\(\)\)/);
   assert.match(app, /renderAvailabilityTimeline\(\{ desiredLeft: nextLeft \}\)/);
-  assert.match(app, /renderAvailabilityTimeline\(\);[\s\S]*renderCommands\(\)/);
+  assert.match(app, /function applyState\(next\)[\s\S]*renderAvailabilityTimeline\(\)/);
 });

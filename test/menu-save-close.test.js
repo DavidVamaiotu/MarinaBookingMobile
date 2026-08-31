@@ -18,9 +18,3 @@ test("non-editor booking overlays close before queued synchronization finishes",
   assert.match(depositSave, /closeBookingOverlays\(\);\s*await runApiAction\("updateDeposit"/);
   assert.match(statusSave, /closeBookingOverlays\(\);\s*await runApiAction\("setStatus"/);
 });
-
-test("successful settings save closes the settings dialog", () => {
-  const settingsSave = sourceBetween('$("#settingsForm").addEventListener("submit"', '$("#testConnection").addEventListener("click"');
-
-  assert.match(settingsSave, /await window\.marina\.saveSettings[\s\S]*settingsWorkspace = null;[\s\S]*settingsDialog\.close\(\)/);
-});

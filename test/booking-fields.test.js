@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const BookingFields = require("../src/shared/booking-fields");
 
-test("WordPress client fields are read through aliases and resource suffixes", () => {
+test("client fields are read through aliases and resource suffixes", () => {
   const booking = { formData: {
     prenume2: { value: "Ana", type: "text" },
     lastname_2: { value: "Popescu", type: "text" },
@@ -21,7 +21,7 @@ test("WordPress client fields are read through aliases and resource suffixes", (
   assert.equal(BookingFields.value(booking, "children"), "1");
 });
 
-test("editing client fields updates original WordPress keys instead of losing them", () => {
+test("editing client fields updates original API keys instead of losing them", () => {
   const formData = { phone4: { value: "old", type: "text" }, telefon_4: { value: "old", type: "text" } };
   BookingFields.assign(formData, "phone", ["phone"], "+40 700 000 000", "text");
   assert.equal(formData.phone4.value, "+40 700 000 000");

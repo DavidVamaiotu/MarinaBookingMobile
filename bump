@@ -93,7 +93,6 @@ fs.writeFileSync(readmePath, readme);
 NODE
 
 node scripts/verify-release-version.js "$TAG"
-npm run wordpress:package
 npm run check
 npm test
 git diff --check

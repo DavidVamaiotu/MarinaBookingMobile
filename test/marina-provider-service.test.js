@@ -70,11 +70,25 @@ test("provider converts Parkline checkout dates to inclusive Marina nights and b
   assert.equal(normalized.trashed, true);
 });
 
+test("provider honors Marina's explicit trash flag independently of approval status", () => {
+  const normalized = normalizeBooking({
+    id: "booking-explicit-trash",
+    resource_id: 31,
+    status: "approved",
+    trash: true,
+    periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }]
+  }, [{ id: 7, providerId: "31" }]);
+
+  assert.equal(normalized.status, "approved");
+  assert.equal(normalized.providerStatus, "approved");
+  assert.equal(normalized.trashed, true);
+});
+
 test("provider restores checkout day when list responses omit migration metadata", () => {
   const normalized = normalizeBooking({
     id: "booking-august",
     resource_id: 4,
-    external: { client_id: "wpbooking-rooms", booking_id: "6723" },
+    external: { client_id: "imported-rooms", booking_id: "6723" },
     periods: [{ start_date: "2026-08-19", end_date: "2026-08-24" }]
   }, [{ id: 9, providerId: "4" }]);
   assert.equal(normalized.resourceId, 9);
@@ -127,17 +141,46 @@ test("provider requests Marina quotes with inclusive periods and normalizes inte
     config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
     oauth,
     api: {
-      quote: async (body) => { requestBody = body; return { payload: { data: { quote_id: "quote-7", pricing_version: 3, nights: 2, total_minor: 30000, deposit_percent: 30, deposit_minor: 9000, balance_minor: 21000, expires_at: "2099-01-01T00:00:00Z", nights_breakdown: [{ date: "2026-09-01", total_minor: 15000 }] } } }; }
+      quote: async (body) => { requestBody = body; return { payload: { data: { quote_id: "quote-7", pricing_version: 3, nights: 2, accommodation_subtotal_minor: 26000, facility_subtotal_minor: 4000, facilities: [{ id: 4, name: "Extra bed", price_per_night_minor: 2000 }], total_minor: 30000, deposit_percent: 30, deposit_minor: 9000, balance_minor: 21000, expires_at: "2099-01-01T00:00:00Z", nights_breakdown: [{ date: "2026-09-01", facilities_minor: 2000, total_minor: 15000 }] } } }; }
     }
   });
   provider.resources = [{ id: 7, providerId: "31" }];
   const quote = await provider.quote({ resourceId: 7, dates: ["2026-09-01", "2026-09-02"], formData: { visitors: { value: "2" }, children: { value: "1" } }, mode: "full" });
-  assert.deepEqual(requestBody, { resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01", units: 1 }], guests: { adults: 2, children: 1 } });
+  assert.deepEqual(requestBody, { resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01", units: 1 }], guests: { adults: 2, children: 1 }, facility_ids: [] });
   assert.equal(quote.quoteId, "quote-7");
   assert.equal(quote.totalMinor, 30000);
   assert.equal(quote.total, 300);
   assert.equal(quote.deposit, 90);
   assert.equal(quote.balance, 210);
+  assert.equal(quote.facilitySubtotalMinor, 4000);
+  assert.equal(quote.facilities[0].name, "Extra bed");
+});
+
+test("provider carries canonical facility selections through quotes and pricing edits", () => {
+  const resources = [{ id: 7, providerId: "31" }];
+  const input = { resourceId: 7, dates: ["2026-09-01", "2026-09-02"], formData: {}, facilityIds: [7, 4, 7] };
+  assert.deepEqual(quoteBody(input, resources).facility_ids, [4, 7]);
+  const current = { ...input, facilityIds: [4, 7], note: "" };
+  assert.deepEqual(bookingPatchBody(current, { facilityIds: [], quoteId: "quote-remove" }, resources).facility_ids, []);
+  assert.deepEqual(bookingPatchBody(current, { note: "fără schimbare de preț" }, resources), { internal_note: "fără schimbare de preț" });
+  assert.deepEqual(bookingPatchBody(current, { sendEmail: false }, resources), { send_email: false });
+});
+
+test("provider exposes eligible facility metadata and immutable booking snapshots", async () => {
+  const oauth = new OAuthStub(true);
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth,
+    api: {
+      resources: async () => ({ payload: { data: [{ id: 31, name: "Camera 1" }] } }),
+      facilities: async () => ({ payload: { data: [{ id: 4, name: "Extra bed", price_per_night_minor: 2000, applies_to_all_resources: true, resource_ids: [], active: true }] } }),
+      bookings: async () => ({ payload: { data: [{ id: 8, resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }], facilities: [{ id: 4, name: "Extra bed", price_per_night_minor: 2000, currency: "RON", billing_period: "night" }] }] } })
+    }
+  });
+  const value = await provider.refresh({ start: "2026-09-01", end: "2026-09-03" });
+  assert.equal(value.facilities[0].pricePerNightMinor, 2000);
+  assert.deepEqual(value.bookings[0].facilityIds, [4]);
+  assert.equal(value.bookings[0].facilities[0].name, "Extra bed");
 });
 
 test("provider checks Marina availability with room handoff times", async () => {
@@ -187,9 +230,10 @@ test("provider sends only customer and note fields for a non-pricing edit", () =
     }
   };
   const formData = { ...current.formData, phone: { value: "0711111111" } };
-  const body = bookingPatchBody(current, { formData, note: "Nouă" }, [{ id: 7, providerId: "31" }]);
+  const body = bookingPatchBody(current, { formData, note: "Nouă", sendEmail: true }, [{ id: 7, providerId: "31" }]);
   assert.equal(body.customer.phone, "0711111111");
   assert.equal(body.internal_note, "Nouă");
+  assert.equal(body.send_email, true);
   assert.equal(body.resource_id, undefined);
   assert.equal(body.periods, undefined);
   assert.equal(body.guests, undefined);
@@ -344,6 +388,53 @@ test("provider exposes Marina edits before the background range refresh finishes
   assert.equal(provider.findBooking("marina:77").version, 5);
 });
 
+test("provider cancels and restores a Marina booking through supported API actions", async () => {
+  const calls = [];
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api: {
+      cancelBooking: async (id, body, key, version) => {
+        calls.push({ action: "cancel", id, body, key, version });
+        return { payload: { data: { booking_id: id, status: "cancelled" } } };
+      },
+      changeBookingStatus: async (id, body, key, version) => {
+        calls.push({ action: "status", id, body, key, version });
+        return { payload: { data: { booking_id: id, status: body.status } } };
+      }
+    }
+  });
+  provider.resources = [{ id: 7, providerId: "31" }];
+  provider.bookings = [{
+    localId: "marina:trash-restore",
+    providerId: "trash-restore",
+    providerResourceId: "31",
+    resourceId: 7,
+    dates: ["2026-09-01", "2026-09-02"],
+    status: "approved",
+    providerStatus: "approved",
+    trashed: false,
+    formData: {},
+    note: "Notă",
+    version: 4
+  }];
+  provider.refreshAfterMutation = () => {};
+
+  const trashed = await provider.update("marina:trash-restore", { trashed: true, sendEmail: true }, "trash");
+  assert.equal(trashed.trashed, true);
+  assert.equal(trashed.providerStatus, "cancelled");
+  assert.equal(calls[0].action, "cancel");
+  assert.deepEqual(calls[0].body, { send_email: true });
+
+  const restored = await provider.update("marina:trash-restore", { trashed: false, sendEmail: false }, "trash");
+  assert.equal(restored.trashed, false);
+  assert.equal(restored.status, "pending");
+  assert.equal(calls[1].action, "status");
+  assert.deepEqual(calls[1].body, { status: "pending", send_email: false });
+  assert.equal(calls[0].version, 4);
+  assert.equal(calls[1].version, 4);
+});
+
 test("provider restores Marina customer custom fields into calendar form data", () => {
   const normalized = normalizeBooking({
     id: "booking-custom-fields",
@@ -437,6 +528,30 @@ test("provider loads full booking details and keeps internal_note as the editabl
   assert.deepEqual(detailed.dates, ["2026-08-01", "2026-08-02", "2026-08-03"]);
 });
 
+test("provider does not duplicate a top-level note repeated in embedded notes", () => {
+  const normalized = normalizeBooking({
+    id: "booking-repeated-note",
+    resource_id: 31,
+    note: "Sosire t\u00e2rzie\n\nAten\u021bie la parcare",
+    notes: [
+      { body: "Sosire t\u00e2rzie" },
+      { body: "Aten\u021bie la parcare" }
+    ]
+  }, [{ id: 7, providerId: "31" }]);
+
+  assert.equal(normalized.note, "Sosire t\u00e2rzie\n\nAten\u021bie la parcare");
+});
+
+test("provider still combines embedded notes when no top-level note exists", () => {
+  const normalized = normalizeBooking({
+    id: "booking-embedded-notes",
+    resource_id: 31,
+    notes: [{ body: "Prima" }, { body: "A doua" }]
+  }, [{ id: 7, providerId: "31" }]);
+
+  assert.equal(normalized.note, "Prima\n\nA doua");
+});
+
 test("provider hydrates the separate notes collection only when internal_note is absent", async () => {
   const oauth = new OAuthStub(true);
   let releaseNotes;
@@ -497,6 +612,45 @@ test("provider replaces and clears a Marina internal note through booking PATCH"
   assert.equal(appendedNotes, 0);
 });
 
+test("Marina note replacement remains authoritative after provider restart", async () => {
+  const oauth = new OAuthStub(true);
+  let cached = {};
+  const cacheStore = {
+    load: () => cached,
+    save: (value) => { cached = structuredClone(value); }
+  };
+  const api = {
+    updateBooking: async (id, _body, _key, version) => ({ payload: { data: {
+      id, resource_id: 31, status: "pending", periods: [{ start_date: "2026-08-01", end_date: "2026-08-02" }],
+      internal_note: "Nota veche", version: Number(version) + 1
+    } } })
+  };
+  const first = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth,
+    api,
+    cacheStore
+  });
+  first.resources = [{ id: 7, providerId: "31" }];
+  first.bookings = [{ localId: "marina:restart-note", providerId: "restart-note", providerResourceId: "31", resourceId: 7, dates: ["2026-08-01"], note: "Nota veche", status: "pending", formData: {}, version: 4 }];
+  first.refreshAfterMutation = () => {};
+  await first.update("marina:restart-note", { note: "Nota înlocuită" }, "note");
+
+  const restarted = new MarinaBookingProvider({
+    config: first.config,
+    oauth: new OAuthStub(true),
+    api,
+    cacheStore
+  });
+  restarted.bookings = restarted.normalizeBookings([{
+    id: "restart-note", resource_id: 31, status: "pending", periods: [{ start_date: "2026-08-01", end_date: "2026-08-02" }],
+    internal_note: "Nota veche", version: 5
+  }]);
+
+  assert.equal(cached.noteOverrides["restart-note"], "Nota înlocuită");
+  assert.equal(restarted.findBooking("marina:restart-note").note, "Nota înlocuită");
+});
+
 test("provider supplies the Marina payment snapshot to the shared Avans popup", async () => {
   const oauth = new OAuthStub(true);
   const provider = new MarinaBookingProvider({
@@ -521,8 +675,89 @@ test("provider supplies the Marina payment snapshot to the shared Avans popup", 
   assert.equal(snapshot.total, 300);
   assert.equal(snapshot.deposit, 90);
   assert.equal(snapshot.balance, 210);
-  assert.equal(snapshot.email_available, false);
+  assert.equal(snapshot.email_available, true);
   assert.equal(snapshot.email, "ana@example.com");
+});
+
+test("provider sends Marina payment requests with bearer auth and idempotency key", async () => {
+  const oauth = new OAuthStub(true);
+  let requestCall;
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth,
+    api: {
+      requestPayment: async (...args) => {
+        requestCall = args;
+        return { payload: { status: "queued", booking_id: 77, event: "booking.payment_requested" } };
+      }
+    }
+  });
+  provider.resources = [{ id: 7, providerId: "31" }];
+  provider.bookings = [{
+    localId: "marina:77", providerId: "77", providerResourceId: "31", resourceId: 7,
+    dates: ["2026-09-01", "2026-09-02"], note: "", formData: {}
+  }];
+
+  const result = await provider.requestPayment("marina:77", { idempotencyKey: "payment-attempt-77" });
+
+  assert.equal(requestCall[0], "77");
+  assert.deepEqual(requestCall[1], {
+    send_email: true,
+    payment_type: "deposit",
+    payment_reason: "Avans rezervare"
+  });
+  assert.equal(requestCall[1].amount_minor, undefined);
+  assert.equal(requestCall[2], "payment-attempt-77");
+  assert.equal(result.status, "queued");
+  assert.equal(result.booking_id, 77);
+  assert.equal(result.event, "booking.payment_requested");
+});
+
+test("provider reports actionable reconnection error when payment request returns 403 or insufficient permissions", async () => {
+  const oauth = new OAuthStub(true);
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth,
+    api: {
+      requestPayment: async () => {
+        throw Object.assign(new Error("Eroare Marina: insufficient permissions"), { status: 403 });
+      }
+    }
+  });
+  provider.resources = [{ id: 7, providerId: "31" }];
+  provider.bookings = [{
+    localId: "marina:77", providerId: "77", providerResourceId: "31", resourceId: 7,
+    dates: ["2026-09-01", "2026-09-02"], note: "", formData: {}
+  }];
+
+  await assert.rejects(
+    () => provider.requestPayment("marina:77", {}),
+    (error) => {
+      assert.equal(error.code, "marina_insufficient_permissions");
+      assert.match(error.message, /permisiuni/i);
+      return true;
+    }
+  );
+});
+
+test("provider accepts the selected booking ID without running the legacy payment validator", async () => {
+  let requestCall;
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api: {
+      requestPayment: async (...args) => {
+        requestCall = args;
+        return { payload: { status: "queued", booking_id: 91, event: "booking.payment_requested" } };
+      }
+    }
+  });
+
+  await provider.requestPayment("server:91", { bookingId: 91, idempotencyKey: "payment-attempt-91" });
+
+  assert.equal(requestCall[0], 91);
+  assert.equal(requestCall[1].payment_type, "deposit");
+  assert.equal(requestCall[2], "payment-attempt-91");
 });
 
 test("Marina payment normalization accepts nested pricing and legacy deposit fields", () => {
@@ -558,19 +793,21 @@ test("Marina manual deposit is namespaced and preserves existing custom fields",
   } });
   assert.equal(payment.deposit, 40);
   assert.equal(payment.balance, 60);
+  assert.equal(payment.manual_deposit, 40);
+  assert.equal(payment.configured_deposit, 30);
 });
 
-test("provider changes Marina Avans through namespaced booking custom fields", async () => {
+test("provider changes Marina Avans through the authoritative deposit_minor field", async () => {
   const oauth = new OAuthStub(true);
   let updateCall;
   const provider = new MarinaBookingProvider({
     config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
     oauth,
     api: {
-      payment: async () => ({ payload: { data: { id: "booking-deposit", resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }], internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 30 RON, Rest: 70 RON\n\nAtenție la parcare", version: 4, custom_fields: { existing: "kept" }, price: { currency: "RON", base_minor: 10000, discount_minor: 0, tax_minor: 0, total_minor: 10000, deposit_minor: 3000, balance_minor: 7000, payment_status: "unpaid", source: "quote", breakdown: { nights: 1 } } } } }),
+      payment: async () => ({ payload: { data: { id: "booking-deposit", resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }], internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 30 RON, Rest: 70 RON\n\nCost total: 100 RON, Depozit: 20 RON, Rest: 80 RON\n\nAtenție la parcare", version: 4, custom_fields: { existing: "kept" }, price: { currency: "RON", base_minor: 10000, discount_minor: 0, tax_minor: 0, total_minor: 10000, deposit_minor: 3000, balance_minor: 7000, payment_status: "unpaid", source: "quote", breakdown: { nights: 1 } } } } }),
       updateDeposit: async (...args) => {
         updateCall = args;
-        return { payload: { data: { id: "booking-deposit", resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }], internal_note: "Cost total: 100 RON, Depozit: 30 RON, Rest: 70 RON", version: 5 } } };
+        return { payload: { data: { id: "booking-deposit", resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }], internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON\n\nAtenție la parcare", price: { total_minor: 10000, deposit_minor: 4000, balance_minor: 6000 }, version: 5 } } };
       }
     }
   });
@@ -589,8 +826,8 @@ test("provider changes Marina Avans through namespaced booking custom fields", a
 
   assert.equal(updateCall[0], "booking-deposit");
   assert.deepEqual(updateCall[1], {
-    custom_fields: { existing: "kept", [MANUAL_DEPOSIT_FIELD]: 4000 },
-    internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON\n\nAtenție la parcare"
+    deposit_minor: 4000,
+    send_email: false
   });
   assert.match(updateCall[2], /^[0-9a-f-]{36}$/);
   assert.equal(updateCall[3], 4);
@@ -606,4 +843,223 @@ test("provider changes Marina Avans through namespaced booking custom fields", a
     internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 30 RON, Rest: 70 RON\n\nAtenție la parcare", version: 5
   }]);
   assert.equal(provider.findBooking("marina:booking-deposit").note, "Sosire târzie\n\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON\n\nAtenție la parcare");
+});
+
+test("manual Marina avans and cleaned note survive provider restart while the API is stale", async () => {
+  let cached = {};
+  const cacheStore = {
+    load: () => cached,
+    save: (value) => { cached = structuredClone(value); }
+  };
+  const staleRecord = {
+    id: "restart-deposit", resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }],
+    internal_note: "Cost total: 400 RON, Depozit: 120 RON, Rest: 280 RON\n\nCost total: 400 RON, Depozit: 90 RON, Rest: 310 RON",
+    version: 4, custom_fields: {}, price: { total_minor: 40000, deposit_minor: 12000, balance_minor: 28000 }
+  };
+  const api = {
+    payment: async () => ({ payload: { data: staleRecord } }),
+    updateDeposit: async () => ({ payload: { data: { ...staleRecord, version: 5 } } })
+  };
+  const first = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api,
+    cacheStore
+  });
+  first.resources = [{ id: 7, providerId: "31" }];
+  first.bookings = [{
+    localId: "marina:restart-deposit", providerId: "restart-deposit", providerResourceId: "31", resourceId: 7,
+    dates: ["2026-09-01"], note: staleRecord.internal_note, formData: {}, version: 4
+  }];
+  first.refreshAfterMutation = () => {};
+  await first.updateDeposit("marina:restart-deposit", { deposit: 180, total: 400, note: staleRecord.internal_note });
+
+  const restarted = new MarinaBookingProvider({
+    config: first.config,
+    oauth: new OAuthStub(true),
+    api,
+    cacheStore
+  });
+  restarted.bookings = restarted.normalizeBookings([staleRecord]);
+  const payment = await restarted.payment("marina:restart-deposit");
+
+  assert.equal(cached.manualDepositOverrides["restart-deposit"], 18000);
+  assert.equal(payment.deposit, 180);
+  assert.equal(payment.balance, 220);
+  assert.equal(restarted.findBooking("marina:restart-deposit").note, "Cost total: 400 RON, Depozit: 180 RON, Rest: 220 RON");
+});
+
+test("provider cache is isolated by Marina workspace", () => {
+  let saved;
+  const baseConfig = MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client", MARINA_ROOMS_WORKSPACE_ID: "2" });
+  const provider = new MarinaBookingProvider({
+    config: { ...baseConfig, workspaceId: baseConfig.workspaceIds.rooms, workspaceSlug: "rooms" },
+    oauth: new OAuthStub(false),
+    api: {},
+    cacheStore: {
+      load: () => ({ workspaceId: 1, workspaceSlug: "camping", resources: [{ id: 7 }], bookings: [{ localId: "marina:old" }], noteOverrides: { old: "secret" } }),
+      save: (value) => { saved = value; }
+    }
+  });
+
+  assert.deepEqual(provider.resources, []);
+  assert.deepEqual(provider.bookings, []);
+  assert.equal(provider.noteOverrides.size, 0);
+  provider.persistCache();
+  assert.equal(saved.workspaceId, 2);
+  assert.equal(saved.workspaceSlug, "rooms");
+});
+
+test("Camping fetches real resources and creates and edits bookings against their Marina IDs", async () => {
+  const oauth = new OAuthStub(true);
+  const quoteBodies = [];
+  const createBodies = [];
+  const updateCalls = [];
+  const baseConfig = MarinaConfig.createConfig({
+    MARINA_INTEGRATION_ENABLED: "true",
+    MARINA_OAUTH_CLIENT_ID: "public-client",
+    MARINA_CAMPING_WORKSPACE_ID: "7"
+  });
+  const campingConfig = {
+    ...baseConfig,
+    workspaceId: baseConfig.workspaceIds.camping,
+    workspaceSlug: "camping"
+  };
+  const listedBooking = {
+    id: 501,
+    resource_id: 15,
+    status: "approved",
+    periods: [{ start_date: "2026-09-10", end_date: "2026-09-11", units: 1 }],
+    customer: {
+      first_name: "Ana",
+      last_name: "Pop",
+      email: "ana@example.test",
+      phone: "0700000000",
+      custom_fields: { car_plates: "B-01-ABC" }
+    },
+    guests: { adults: 2, children: 0 },
+    internal_note: "Camping",
+    version: 3
+  };
+  const provider = new MarinaBookingProvider({
+    config: campingConfig,
+    oauth,
+    api: {
+      resources: async () => ({ payload: { data: [
+        {
+          id: 15,
+          name: "Camping pitches",
+          timezone: "Europe/Bucharest",
+          booking_mode: "date_range",
+          capacity: 50,
+          capacity_mode: "limited",
+          capacity_unit_mode: "per_booking",
+          active: true,
+          settings: { kind: "tent" },
+          version: 2
+        },
+        {
+          id: 32,
+          name: "32",
+          booking_mode: "date_range",
+          capacity: 4,
+          capacity_mode: "limited",
+          capacity_unit_mode: "per_booking",
+          active: true,
+          settings: { kind: "caravan" }
+        }
+      ] } }),
+      facilities: async () => ({ payload: { data: [] } }),
+      bookings: async () => ({ payload: { data: [listedBooking] } }),
+      quote: async (body) => {
+        quoteBodies.push(structuredClone(body));
+        return { payload: { data: {
+          quote_id: `camping-quote-${quoteBodies.length}`,
+          nights: 2,
+          total_minor: 20000,
+          deposit_minor: 6000,
+          balance_minor: 14000,
+          expires_at: "2099-01-01T00:00:00Z"
+        } } };
+      },
+      createBooking: async (body) => {
+        createBodies.push(structuredClone(body));
+        return { payload: { data: {
+          id: 502,
+          ...body,
+          status: "pending",
+          version: 1
+        } } };
+      },
+      updateBooking: async (id, body, key, version) => {
+        updateCalls.push({ id, body: structuredClone(body), key, version });
+        return { payload: { data: {
+          ...listedBooking,
+          id,
+          customer: body.customer || listedBooking.customer,
+          internal_note: body.internal_note ?? listedBooking.internal_note,
+          version: Number(version) + 1
+        } } };
+      }
+    }
+  });
+  provider.refreshAfterMutation = () => {};
+
+  const state = await provider.refresh({ start: "2026-09-01", end: "2026-09-30" });
+  const pitch = state.resources.find((resource) => resource.providerId === "15");
+  const resource32 = state.resources.find((resource) => resource.providerId === "32");
+  assert.ok(pitch);
+  assert.ok(resource32);
+  assert.equal(pitch.title, "Camping pitches");
+  assert.equal(pitch.capacity, 50);
+  assert.equal(pitch.capacityMode, "limited");
+  assert.equal(pitch.capacityUnitMode, "per_booking");
+  assert.deepEqual(pitch.settings, { kind: "tent" });
+  assert.equal(state.bookings[0].resourceId, pitch.id);
+
+  const created = await provider.create({
+    resourceId: pitch.id,
+    dates: ["2026-09-20", "2026-09-21", "2026-09-22"],
+    quoteId: "ui-quote",
+    sendEmail: true,
+    note: "Sosire cu cortul",
+    formData: {
+      name: { value: "Ion" },
+      secondname: { value: "Ionescu" },
+      email: { value: "ion@example.test" },
+      phone: { value: "0711111111" },
+      visitors: { value: "2" },
+      children: { value: "1" },
+      car_plates: { value: "CJ-02-XYZ" }
+    }
+  });
+  assert.equal(created.resourceId, pitch.id);
+  assert.equal(createBodies.length, 1);
+  assert.equal(createBodies[0].resource_id, 15);
+  assert.equal(createBodies[0].send_email, true);
+  assert.equal(createBodies[0].quote_id, "camping-quote-1");
+  assert.deepEqual(createBodies[0].periods, [
+    { start_date: "2026-09-20", end_date: "2026-09-21", units: 1 }
+  ]);
+  assert.deepEqual(createBodies[0].guests, { adults: 2, children: 1 });
+  assert.equal(createBodies[0].customer.custom_fields.car_plates, "CJ-02-XYZ");
+  assert.equal(createBodies[0].workspace_id, undefined);
+  assert.equal(quoteBodies[0].resource_id, 15);
+
+  const edited = await provider.update(state.bookings[0].localId, {
+    formData: {
+      ...state.bookings[0].formData,
+      phone: { value: "0722222222" }
+    },
+    note: "Camping actualizat"
+  }, "contact");
+  assert.equal(edited.resourceId, pitch.id);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0].id, "501");
+  assert.equal(updateCalls[0].version, 3);
+  assert.equal(updateCalls[0].body.customer.phone, "0722222222");
+  assert.equal(updateCalls[0].body.internal_note, "Camping actualizat");
+  assert.equal(updateCalls[0].body.resource_id, undefined);
+  assert.equal(updateCalls[0].body.periods, undefined);
+  assert.equal(updateCalls[0].body.quote_id, undefined);
 });

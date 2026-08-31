@@ -37,6 +37,12 @@ function normalizeMarinaQuote(payload, { mode = "full" } = {}) {
   if (!expiresAt || Number.isNaN(new Date(expiresAt).getTime())) throw Object.assign(new Error("Marina nu a returnat expirarea cotației."), { code: "marina_invalid_quote", permanent: true });
   const pricingVersion = value.pricing_version ?? value.pricingVersion ?? null;
   const nightsBreakdown = Array.isArray(value.nights_breakdown ?? value.nightsBreakdown) ? (value.nights_breakdown ?? value.nightsBreakdown) : [];
+  const facilitySubtotalValue = value.facility_subtotal_minor ?? value.facilitySubtotalMinor;
+  const accommodationSubtotalValue = value.accommodation_subtotal_minor ?? value.accommodationSubtotalMinor;
+  const facilitySubtotalMinor = facilitySubtotalValue === undefined ? 0 : integer(facilitySubtotalValue, "facility_subtotal_minor");
+  const accommodationSubtotalMinor = accommodationSubtotalValue === undefined ? totalMinor - facilitySubtotalMinor : integer(accommodationSubtotalValue, "accommodation_subtotal_minor");
+  if (accommodationSubtotalMinor + facilitySubtotalMinor !== totalMinor) throw Object.assign(new Error("Marina a returnat subtotaluri de facilități inconsistente."), { code: "marina_invalid_quote", permanent: true });
+  const facilities = Array.isArray(value.facilities) ? value.facilities : [];
   return {
     ...value,
     valid: value.valid !== false,
@@ -57,6 +63,11 @@ function normalizeMarinaQuote(payload, { mode = "full" } = {}) {
     balance_minor: balanceMinor,
     nightsBreakdown,
     nights_breakdown: nightsBreakdown,
+    facilities,
+    accommodationSubtotalMinor,
+    accommodation_subtotal_minor: accommodationSubtotalMinor,
+    facilitySubtotalMinor,
+    facility_subtotal_minor: facilitySubtotalMinor,
     expiresAt,
     expires_at: expiresAt,
     total: moneyMajor(totalMinor),

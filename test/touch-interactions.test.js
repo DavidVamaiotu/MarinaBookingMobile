@@ -194,7 +194,7 @@ test("opening a client popup cannot read or mutate camera state", () => {
 
 test("menus, side panels, dialogs, diagnostics, and toasts stay in the unscaled overlay layer", () => {
   assert.match(stylesSource, /\.overlay-layer\{position:fixed;inset:0;z-index:50;pointer-events:none\}/);
-  assert.match(indexSource, /<div class="overlay-layer" id="overlayLayer">[\s\S]*id="bookingMenu"[\s\S]*id="detailsPanel"[\s\S]*<dialog id="paymentDialog"[\s\S]*<dialog id="createDialog"[\s\S]*<dialog id="settingsDialog"[\s\S]*id="diagnostics"[\s\S]*id="toast"/);
+  assert.match(indexSource, /<div class="overlay-layer" id="overlayLayer">[\s\S]*id="bookingMenu"[\s\S]*id="detailsPanel"[\s\S]*<dialog id="paymentDialog"[\s\S]*<dialog id="createDialog"[\s\S]*id="diagnostics"[\s\S]*id="toast"/);
   assert.doesNotMatch(appSource, /bookingMenu\.addEventListener\("touch|bookingMenu\.addEventListener\("wheel/);
   assert.doesNotMatch(appSource, /setBookingMenuTransformOrigin|beginBookingMenuZoom|handleBookingMenuWheel/);
 });

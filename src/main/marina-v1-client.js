@@ -1,6 +1,6 @@
 "use strict";
 
-const { normalizeBaseUrl } = require("../shared/marina-config");
+const { normalizeBaseUrl, normalizeWorkspaceId } = require("../shared/marina-config");
 
 class MarinaApiError extends Error {
   constructor(message, options = {}) {
@@ -72,13 +72,27 @@ function bookingRequestBody(body, { expectedVersion } = {}) {
     ...(result.guests.adults === undefined ? {} : { adults: integerField(result.guests.adults, "guests.adults") }),
     ...(result.guests.children === undefined ? {} : { children: integerField(result.guests.children, "guests.children") })
   };
+  if (result.facility_ids !== undefined) {
+    if (!Array.isArray(result.facility_ids)) throw new TypeError("facility_ids trebuie să fie o listă.");
+    result.facility_ids = result.facility_ids.map((value) => {
+      const id = integerField(value, "facility_ids");
+      if (id < 1) throw new TypeError("facility_ids trebuie să conțină doar identificatori pozitivi.");
+      return id;
+    });
+    if (result.facility_ids.length > 64 || new Set(result.facility_ids).size !== result.facility_ids.length) {
+      throw new TypeError("facility_ids conține prea multe valori sau valori duplicate.");
+    }
+  }
   return result;
 }
 
 class MarinaV1ApiClient {
-  constructor({ baseUrl, oauth, fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
+  constructor({ baseUrl, oauth, workspaceId = null, workspaceSlug = "", fetchImpl = globalThis.fetch, timeoutMs = 15000 } = {}) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.oauth = oauth;
+    this.workspaceId = normalizeWorkspaceId(workspaceId);
+    this.workspaceSlug = String(workspaceSlug || "").trim().toLowerCase();
+    this.workspaceResolution = null;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
   }
@@ -88,8 +102,39 @@ class MarinaV1ApiClient {
     return `${this.baseUrl}${normalized}`;
   }
 
-  async request(path, { method = "GET", body, headers = {}, idempotencyKey, expectedVersion, signal, retryOnUnauthorized = true } = {}) {
+  async resolveWorkspaceId() {
+    if (this.workspaceId !== null) return this.workspaceId;
+    if (!this.workspaceSlug) return null;
+    if (!this.workspaceResolution) this.workspaceResolution = (async () => {
+      const response = await this.request("/v1/workspaces", { workspaceScoped: false });
+      const rows = Array.isArray(response.payload?.data)
+        ? response.payload.data
+        : Array.isArray(response.payload?.workspaces) ? response.payload.workspaces : [];
+      const active = rows.filter((workspace) => workspace?.active !== false);
+      let selected = active.find((workspace) => String(workspace?.slug || "").trim().toLowerCase() === this.workspaceSlug);
+      if (!selected && this.workspaceSlug === "rooms") {
+        selected = active.find((workspace) => ["camere", "default"].includes(String(workspace?.slug || "").trim().toLowerCase()))
+          || active.find((workspace) => workspace?.is_default === true);
+      }
+      const id = normalizeWorkspaceId(selected?.id);
+      if (id === null) {
+        throw Object.assign(new Error(`Workspace-ul Marina „${this.workspaceSlug}” nu este accesibil.`), {
+          code: "marina_workspace_missing",
+          permanent: true
+        });
+      }
+      this.workspaceId = id;
+      return id;
+    })().catch((error) => {
+      this.workspaceResolution = null;
+      throw error;
+    });
+    return this.workspaceResolution;
+  }
+
+  async request(path, { method = "GET", body, headers = {}, idempotencyKey, expectedVersion, signal, retryOnUnauthorized = true, workspaceScoped = true } = {}) {
     if (!this.oauth?.getAccessToken) throw new MarinaApiError("Conexiunea Marina nu este configurată.", { code: "marina_not_connected", auth: true, permanent: true });
+    const workspaceId = workspaceScoped ? await this.resolveWorkspaceId() : null;
     const controller = new AbortController();
     let timedOut = false;
     const abort = () => controller.abort();
@@ -101,6 +146,7 @@ class MarinaV1ApiClient {
       while (true) {
         const accessToken = await this.oauth.getAccessToken();
         const requestHeaders = { Accept: "application/json", ...headers, Authorization: `Bearer ${accessToken}` };
+        if (workspaceId !== null) requestHeaders["X-Workspace-ID"] = String(workspaceId);
         if (body !== undefined) requestHeaders["Content-Type"] = "application/json";
         if (idempotencyKey) requestHeaders["Idempotency-Key"] = String(idempotencyKey);
         if (expectedVersion !== undefined && expectedVersion !== null) requestHeaders["If-Match"] = String(expectedVersion);
@@ -145,7 +191,12 @@ class MarinaV1ApiClient {
     }
   }
 
+  workspaces(options = {}) { return this.request("/v1/workspaces", { ...options, workspaceScoped: false }); }
   resources(options) { return this.request("/v1/resources", options); }
+  facilities(query = {}, options) {
+    const queryValue = queryString(query);
+    return this.request(`/v1/facilities${queryValue ? `?${queryValue}` : ""}`, options);
+  }
   createResource(body, idempotencyKey, options = {}) { return this.request("/v1/resources", { ...options, method: "POST", body, idempotencyKey }); }
   resource(id, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}`, options); }
   pricing(id, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}/pricing`, options); }
@@ -158,6 +209,14 @@ class MarinaV1ApiClient {
   quote(body, options = {}) { return this.request("/v1/quotes", { ...options, method: "POST", body: bookingRequestBody(body) }); }
   booking(id, options) { return this.request(`/v1/bookings/${encodeURIComponent(id)}`, options); }
   payment(id, options) { return this.booking(id, options); }
+  requestPayment(id, body, idempotencyKey, options = {}) {
+    return this.request(`/v1/admin/bookings/${encodeURIComponent(id)}/payment-request`, {
+      ...options,
+      method: "POST",
+      body,
+      idempotencyKey
+    });
+  }
   updateDeposit(id, body, idempotencyKey, expectedVersion, options = {}) { return this.updateBooking(id, body, idempotencyKey, expectedVersion, options); }
   createBooking(body, idempotencyKey, options = {}) { return this.request("/v1/bookings", { ...options, method: "POST", body: bookingRequestBody(body), idempotencyKey }); }
   updateBooking(id, body, idempotencyKey, expectedVersion, options = {}) { return this.request(`/v1/bookings/${encodeURIComponent(id)}`, { ...options, method: "PATCH", body: bookingRequestBody(body, { expectedVersion }), idempotencyKey, expectedVersion }); }

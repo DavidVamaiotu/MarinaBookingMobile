@@ -40,6 +40,81 @@ test("Marina API client uses bearer auth and refreshes once after 401", async ()
   assert.equal(requests[1].options.headers.Authorization, "Bearer fresh");
 });
 
+test("Marina API client scopes requests with the configured workspace header only", async () => {
+  const requests = [];
+  const client = new MarinaV1ApiClient({
+    baseUrl: "https://booking.husi.ro",
+    workspaceId: 2,
+    oauth: { getAccessToken: async () => "workspace-token" },
+    fetchImpl: async (_url, options) => {
+      requests.push(options);
+      return response(200, { data: [] });
+    }
+  });
+
+  await client.resources();
+  await client.createBooking({ resource_id: 15, periods: [] }, "workspace-booking");
+
+  assert.equal(requests[0].headers["X-Workspace-ID"], "2");
+  assert.equal(requests[1].headers["X-Workspace-ID"], "2");
+  assert.equal(JSON.parse(requests[1].body).workspace_id, undefined);
+});
+
+test("Marina API client lists workspace facilities and validates facility IDs", async () => {
+  const requests = [];
+  const client = new MarinaV1ApiClient({
+    baseUrl: "https://booking.husi.ro",
+    workspaceId: 2,
+    oauth: { getAccessToken: async () => "facility-token" },
+    fetchImpl: async (url, options) => { requests.push({ url, options }); return response(200, { data: [] }); }
+  });
+  await client.facilities({ resource_id: 12 });
+  await client.quote({ resource_id: 12, periods: [], guests: { adults: 1, children: 0 }, facility_ids: [4, 7] });
+  assert.equal(requests[0].url, "https://booking.husi.ro/v1/facilities?resource_id=12");
+  assert.equal(requests[0].options.headers["X-Workspace-ID"], "2");
+  assert.deepEqual(JSON.parse(requests[1].options.body).facility_ids, [4, 7]);
+  assert.throws(() => client.quote({ resource_id: 12, periods: [], facility_ids: [4, 4] }), /duplicate/);
+});
+
+test("Marina API client discovers workspace IDs without a workspace header", async () => {
+  const requests = [];
+  const client = new MarinaV1ApiClient({
+    baseUrl: "https://booking.husi.ro",
+    workspaceSlug: "camping",
+    oauth: { getAccessToken: async () => "workspace-token" },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith("/v1/workspaces")) return response(200, { data: [{ id: 1, slug: "rooms", active: true }, { id: 2, slug: "camping", active: true }] });
+      return response(200, { data: [] });
+    }
+  });
+
+  await client.resources();
+  await client.quote({ resource_id: 15, periods: [], guests: { adults: 1, children: 0 } });
+
+  assert.equal(requests[0].url, "https://booking.husi.ro/v1/workspaces");
+  assert.equal(requests[0].options.headers["X-Workspace-ID"], undefined);
+  assert.equal(requests[1].options.headers["X-Workspace-ID"], "2");
+  assert.equal(requests[2].options.headers["X-Workspace-ID"], "2");
+  assert.equal(JSON.parse(requests[2].options.body).workspace_id, undefined);
+});
+
+test("Rooms can resolve the active default workspace when a rooms slug is absent", async () => {
+  const requests = [];
+  const client = new MarinaV1ApiClient({
+    workspaceSlug: "rooms",
+    oauth: { getAccessToken: async () => "token" },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return url.endsWith("/v1/workspaces")
+        ? response(200, { data: [{ id: 7, slug: "main", active: true, is_default: true }] })
+        : response(200, { data: [] });
+    }
+  });
+  await client.resources();
+  assert.equal(requests[1].options.headers["X-Workspace-ID"], "7");
+});
+
 test("Marina API client sends idempotency and version headers for mutations", async () => {
   let request;
   const client = new MarinaV1ApiClient({
@@ -59,6 +134,25 @@ test("Marina API client sends idempotency and version headers for mutations", as
   assert.deepEqual(JSON.parse(request.options.body), { resource_id: 31, expected_version: 6 });
 });
 
+test("Marina API client sends versioned status changes through the supported endpoint", async () => {
+  let request;
+  const client = new MarinaV1ApiClient({
+    baseUrl: "https://booking.husi.ro",
+    oauth: { getAccessToken: async () => "token" },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return response(200, { booking_id: "booking-1", status: "pending" });
+    }
+  });
+
+  await client.changeBookingStatus("booking-1", { status: "pending" }, "status-restore-1", 6);
+  assert.equal(request.url, "https://booking.husi.ro/v1/bookings/booking-1/status");
+  assert.equal(request.options.method, "POST");
+  assert.equal(request.options.headers["Idempotency-Key"], "status-restore-1");
+  assert.equal(request.options.headers["If-Match"], "6");
+  assert.deepEqual(JSON.parse(request.options.body), { status: "pending", expected_version: 6 });
+});
+
 test("Marina API client reads the payment snapshot and sends a versioned deposit update", async () => {
   const requests = [];
   const client = new MarinaV1ApiClient({
@@ -73,10 +167,7 @@ test("Marina API client reads the payment snapshot and sends a versioned deposit
   const snapshot = await client.payment("booking-payment");
   const updated = await client.updateDeposit(
     "booking-payment",
-    {
-      custom_fields: { existing: "kept", parkline_manual_deposit_minor: 4000 },
-      internal_note: "Sosire târzie\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON"
-    },
+    { deposit_minor: 4000, send_email: false },
     "deposit-key",
     8
   );
@@ -90,10 +181,42 @@ test("Marina API client reads the payment snapshot and sends a versioned deposit
   assert.equal(requests[1].options.headers["Idempotency-Key"], "deposit-key");
   assert.equal(requests[1].options.headers["If-Match"], "8");
   assert.deepEqual(JSON.parse(requests[1].options.body), {
-    custom_fields: { existing: "kept", parkline_manual_deposit_minor: 4000 },
-    internal_note: "Sosire târzie\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON",
+    deposit_minor: 4000,
+    send_email: false,
     expected_version: 8
   });
+});
+
+test("Marina API client sends exactly one deposit payment request to the admin route", async () => {
+  const requests = [];
+  const client = new MarinaV1ApiClient({
+    baseUrl: "https://booking.husi.ro",
+    oauth: { getAccessToken: async () => "payment-req-token" },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return response(202, { status: "queued", booking_id: 42, event: "booking.payment_requested" });
+    }
+  });
+
+  const result = await client.requestPayment(42, {
+    send_email: true,
+    payment_type: "deposit",
+    payment_reason: "Avans rezervare"
+  }, "pay-key-42");
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://booking.husi.ro/v1/admin/bookings/42/payment-request");
+  assert.equal(requests[0].options.method, "POST");
+  assert.equal(requests[0].options.headers.Authorization, "Bearer payment-req-token");
+  assert.equal(requests[0].options.headers["Idempotency-Key"], "pay-key-42");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    send_email: true,
+    payment_type: "deposit",
+    payment_reason: "Avans rezervare"
+  });
+  assert.equal(JSON.parse(requests[0].options.body).amount_minor, undefined);
+  assert.equal(result.status, 202);
+  assert.deepEqual(result.payload, { status: "queued", booking_id: 42, event: "booking.payment_requested" });
 });
 
 test("Marina API client creates resources with bearer auth and an idempotency key", async () => {

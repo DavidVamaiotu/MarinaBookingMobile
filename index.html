@@ -10,15 +10,12 @@
 <body>
   <main class="app-shell">
     <header class="toolbar">
-      <div class="brand"><img src="assets/marina-park-logo.png" alt=""><div><strong>Marina Booking</strong><span>Rezervări WordPress</span></div></div>
+      <div class="brand"><img src="assets/marina-park-logo.png" alt=""><div><strong>Marina Booking</strong><span>Rooms &amp; Camping</span></div></div>
       <nav class="workspace-tabs" aria-label="Tip cazare">
         <button class="workspace-tab is-active" data-workspace="rooms" type="button" aria-selected="true">Camere</button>
         <button class="workspace-tab" data-workspace="camping" type="button" aria-selected="false">Camping</button>
-        <button class="workspace-tab" data-workspace="marina" type="button" aria-selected="false">Marina Calendar</button>
       </nav>
       <div class="toolbar-actions">
-        <button class="danger subtle compact" id="pauseQueue" type="button" hidden>Oprește acțiunile</button>
-        <button class="secondary compact" id="resumeQueue" type="button" hidden>Repornește acțiunile</button>
         <button class="sync-indicator" id="syncIndicator" type="button" aria-label="Deschide diagnosticul sincronizării"><span class="status-dot"></span><span id="syncText">Deconectat</span><small id="syncCounts">0 în așteptare</small></button>
         <button class="secondary" id="openSettings" type="button">Setări</button>
         <button class="primary" id="openCreate" type="button">Rezervare nouă</button>
@@ -34,7 +31,6 @@
           <button id="nextMonth" type="button" aria-label="Luna următoare">›</button>
           <button class="secondary compact" id="today" type="button">Astăzi</button>
           <button class="secondary compact" id="refresh" type="button">Actualizează</button>
-          <button class="secondary compact" id="marinaMigrationAction" type="button" hidden>Importă Camere</button>
           <button class="secondary compact" id="toggleTrashed" type="button" aria-pressed="false">Afișează gunoiul</button>
           <button class="secondary compact" id="openAvailability" type="button" aria-pressed="false">Disponibilitate</button>
         </div>
@@ -59,12 +55,13 @@
         </div>
         <section class="marina-setup-panel" id="marinaSetupPanel" aria-labelledby="marinaSetupTitle" hidden>
           <div class="marina-setup-card">
-            <p>Integrare opțională</p>
-            <h2 id="marinaSetupTitle">Marina Calendar</h2>
-            <p id="marinaSetupDetail">Această sursă este păstrată vizibilă pentru configurare ulterioară.</p>
+            <p>Conexiune necesară</p>
+            <h2 id="marinaSetupTitle">Marina Booking API</h2>
+            <p id="marinaSetupDetail">Conectează contul pentru a încărca workspace-ul selectat.</p>
             <div class="marina-setup-status" role="status"><span class="status-dot"></span><strong id="marinaSetupStatus">Dezactivat</strong></div>
             <dl class="marina-setup-facts">
               <div><dt>API</dt><dd id="marinaSetupApi">https://booking.husi.ro</dd></div>
+              <div><dt>Workspace</dt><dd id="marinaSetupWorkspace">—</dd></div>
               <div><dt>Scope-uri</dt><dd id="marinaSetupScopes">resources:read resources:write bookings:read bookings:write</dd></div>
             </dl>
             <button class="secondary" id="marinaSetupAction" type="button" disabled>Conectează Marina</button>
@@ -90,6 +87,7 @@
         <div class="booking-payment-dropdown" id="bookingPaymentMenu" role="menu" hidden>
           <button id="bookingMenuChangeDeposit" type="button" role="menuitem">Schimbă avansul</button>
           <button id="bookingMenuSendPayment" type="button" role="menuitem">Trimite emailul de plată</button>
+          <button id="bookingMenuGenerateInvoice" type="button" role="menuitem">Generează factura</button>
         </div>
       </div>
     </div>
@@ -149,6 +147,7 @@
         <input name="start" type="hidden">
         <input name="end" type="hidden">
         <div class="field-grid" id="reservationExtraFields"></div>
+        <div class="facility-options" id="detailsFacilities" hidden></div>
       </section>
 
       <section class="details-section details-note-section">
@@ -191,7 +190,7 @@
         </div>
         <div class="payment-verification">
           <div class="payment-note-card"><span class="payment-verification-icon" aria-hidden="true">i</span><span><strong id="paymentNoteLabel">Notă rezervare</strong><pre id="paymentNoteText">Se verifică…</pre></span></div>
-          <div class="payment-database-card"><span class="payment-verification-icon" aria-hidden="true">≡</span><span><strong>Avans în baza de date WordPress</strong><b id="paymentDatabaseDeposit">Se verifică…</b></span></div>
+          <div class="payment-database-card"><span class="payment-verification-icon" aria-hidden="true">≡</span><span><strong>Avans în API-ul Marina</strong><b id="paymentDatabaseDeposit">Se verifică…</b></span></div>
         </div>
         <div class="field-grid payment-controls">
           <label>Avans nou<input name="depositAmount" type="number" inputmode="decimal" min="0" step="0.01"></label>
@@ -200,6 +199,75 @@
         <button class="primary" id="sendPaymentRequest" type="button"><span aria-hidden="true">✉</span>Trimite emailul de plată</button>
         <p class="payment-status" id="paymentStatus"></p>
       </section>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" aria-labelledby="settingsDialogTitle">
+    <form id="settingsForm" class="panel-form settings-form" novalidate>
+      <header><div><p>Configurare aplicație</p><h2 id="settingsDialogTitle">Setări</h2></div><button class="icon" id="closeSettingsDialog" type="button" aria-label="Închide">×</button></header>
+      <section class="settings-section" aria-labelledby="settingsConnectionTitle">
+        <h3 id="settingsConnectionTitle">Conexiune Marina</h3>
+        <p class="settings-status" id="settingsConnectionStatus">Se verifică starea conexiunii…</p>
+        <button class="secondary" id="settingsMarinaAction" type="button">Se verifică…</button>
+      </section>
+      <section class="saga-invoice-fields" aria-labelledby="settingsSagaTitle">
+        <h3 id="settingsSagaTitle">Facturare SAGA</h3>
+        <p class="saga-invoice-inline-note">Completează aici datele firmei care emite factura. Acestea vor fi precompletate la „Plată → Generează factura”. CUI-ul este obligatoriu doar la generarea XML.</p>
+        <div class="field-grid">
+          <label class="span-2">Denumire furnizor<input name="supplierName" autocomplete="organization"></label>
+          <label>Cod fiscal furnizor<input name="supplierCif" autocomplete="off"></label>
+          <label>Nr. Registrul Comerțului<input name="supplierRegCom" autocomplete="off"></label>
+          <label class="span-2">Adresă furnizor<input name="supplierAddress" autocomplete="street-address"></label>
+          <label>Localitate<input name="supplierCity" autocomplete="address-level2"></label>
+          <label>Județ<input name="supplierCounty" autocomplete="address-level1"></label>
+          <label>Telefon<input name="supplierPhone" type="tel" autocomplete="tel"></label>
+          <label>Email<input name="supplierEmail" type="email" autocomplete="email"></label>
+          <label class="span-2">IBAN<input name="supplierIban" autocomplete="off"></label>
+          <label>Cota TVA implicită<select name="vatRate"><option value="11">11% — cazare</option><option value="21">21% — standard</option><option value="0">0% — fără TVA</option></select></label>
+        </div>
+        <p class="availability">Verifică în SAGA cota TVA aplicabilă înainte de import; valoarea implicită este 11% pentru cazare.</p>
+      </section>
+      <p class="saga-invoice-status" id="settingsStatus" role="status" aria-live="polite"></p>
+      <footer><button class="secondary" id="cancelSettingsDialog" type="button">Anulează</button><button class="primary" id="settingsSubmit" type="submit">Salvează setările</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="sagaInvoiceDialog" aria-labelledby="sagaInvoiceDialogTitle">
+    <form id="sagaInvoiceForm" class="panel-form saga-invoice-form" novalidate>
+      <header><div><p>Export SAGA</p><h2 id="sagaInvoiceDialogTitle">Generează factura</h2></div><button class="icon" id="closeSagaInvoiceDialog" type="button" aria-label="Închide">×</button></header>
+      <section class="saga-invoice-preview" aria-labelledby="sagaInvoiceClientTitle">
+        <h3 id="sagaInvoiceClientTitle">Client și rezervare</h3>
+        <p id="sagaInvoiceClientName">Se verifică…</p>
+        <p id="sagaInvoiceClientAddress">Se verifică adresa din API-ul Marina…</p>
+        <p id="sagaInvoiceClientTotal">Cost total: —</p>
+      </section>
+      <p class="availability">Adresa clientului este citită din rezervarea Marina revalidată. Datele furnizorului sunt preluate din Setări și pot fi ajustate doar pentru această factură. Fișierul XML se descarcă local și nu modifică rezervarea.</p>
+      <section class="saga-invoice-fields" aria-labelledby="sagaInvoiceSupplierTitle">
+        <h3 id="sagaInvoiceSupplierTitle">Date furnizor</h3>
+        <p class="saga-invoice-inline-note">Valorile sunt precompletate din Setări. Modificările făcute aici se aplică doar acestui fișier.</p>
+        <div class="field-grid">
+          <label class="span-2">Denumire furnizor<input name="supplierName" autocomplete="organization" required></label>
+          <label>Cod fiscal furnizor<input name="supplierCif" autocomplete="off" required></label>
+          <label>Nr. Registrul Comerțului<input name="supplierRegCom" autocomplete="off"></label>
+          <label class="span-2">Adresă furnizor<input name="supplierAddress" autocomplete="street-address"></label>
+          <label>Localitate<input name="supplierCity" autocomplete="address-level2"></label>
+          <label>Județ<input name="supplierCounty" autocomplete="address-level1"></label>
+          <label>Telefon<input name="supplierPhone" type="tel" autocomplete="tel"></label>
+          <label>Email<input name="supplierEmail" type="email" autocomplete="email"></label>
+          <label class="span-2">IBAN<input name="supplierIban" autocomplete="off"></label>
+        </div>
+      </section>
+      <section class="saga-invoice-fields" aria-labelledby="sagaInvoiceDocumentTitle">
+        <h3 id="sagaInvoiceDocumentTitle">Date document</h3>
+        <div class="field-grid">
+          <label>Număr factură<input name="invoiceNumber" autocomplete="off" required></label>
+          <label>Data facturii<input name="issueDate" type="date" required></label>
+          <label>Cota TVA<select name="vatRate"><option value="11">11% — cazare</option><option value="21">21% — standard</option><option value="0">0% — fără TVA</option></select></label>
+        </div>
+        <p class="availability">Verifică în SAGA cota TVA aplicabilă înainte de import; valoarea implicită este 11% pentru cazare.</p>
+      </section>
+      <p class="saga-invoice-status" id="sagaInvoiceStatus" role="status" aria-live="polite"></p>
+      <footer><button class="secondary" id="cancelSagaInvoiceDialog" type="button">Anulează</button><button class="primary" id="sagaInvoiceSubmit" type="submit">Generează factura</button></footer>
     </form>
   </dialog>
 
@@ -241,8 +309,9 @@
           <label>Adulți:<select name="adults"></select></label>
           <label>Copii:<select name="children"></select></label>
         </div>
-        <label class="extra-bed" id="createExtraBed">Pat suplimentar (+50 Lei):<input name="extraBed" type="checkbox"></label>
-        <label class="extra-bed" id="createElectricity" hidden>Energie electrică (+20 Lei/noapte):<input name="electricity" type="checkbox"></label>
+        <label class="extra-bed" id="createExtraBed" hidden>Pat suplimentar:<input name="extraBed" type="checkbox"></label>
+        <label class="extra-bed" id="createElectricity" hidden>Energie electrică:<input name="electricity" type="checkbox"></label>
+        <div class="facility-options" id="createFacilities" hidden></div>
         <label class="check email-option create-email-option"><input name="sendEmail" type="checkbox"><span>Trimite notificarea pentru rezervarea nouă prin email.</span></label>
       </div>
 
@@ -266,22 +335,9 @@
     </form>
   </dialog>
 
-  <dialog id="settingsDialog">
-    <form id="settingsForm" class="panel-form" method="dialog" autocomplete="off">
-      <header><div><p id="settingsSourceLabel">Conexiune camere</p><h2 id="settingsTitle">Setări Camere</h2></div><button class="icon" id="closeSettingsDialog" type="button" aria-label="Închide setările">×</button></header>
-      <label>URL de bază API<input name="apiBaseUrl" type="url" placeholder="https://example.com/wp-json/marina-booking/v1" required></label>
-      <label>Utilizator API<input name="username" autocomplete="off" required></label>
-      <label>Parolă de aplicație<input name="password" type="password" autocomplete="new-password" placeholder="Lasă gol pentru a păstra parola salvată"></label>
-      <label>Fus orar al site-ului<input name="timezone" value="Europe/Bucharest" required></label>
-      <div class="settings-status" id="settingsStatus"></div>
-      <footer><button class="danger subtle" id="clearCredentials" type="button">Șterge datele locale</button><span></span><button class="secondary" id="testConnection" type="button">Testează conexiunea</button><button class="primary" type="submit">Salvează</button></footer>
-    </form>
-  </dialog>
-
   <aside class="diagnostics" id="diagnostics" hidden>
-    <header><div><p>Coada locală persistentă</p><h2>Diagnostic sincronizare</h2></div><div class="diagnostic-header-actions"><button class="secondary compact" id="clearQueueIssues" type="button" hidden>Anulează modificările eșuate</button><button class="icon" data-close="diagnostics" type="button" aria-label="Închide diagnosticul">×</button></div></header>
+    <header><div><p>Marina Booking API</p><h2>Diagnostic sincronizare</h2></div><div class="diagnostic-header-actions"><button class="icon" data-close="diagnostics" type="button" aria-label="Închide diagnosticul">×</button></div></header>
     <div class="diagnostic-summary" id="diagnosticSummary"></div>
-    <div class="command-list" id="commandList"></div>
   </aside>
 
     <div class="toast-region" id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
@@ -289,10 +345,10 @@
   <script src="src/shared/error-messages.js"></script>
   <script src="src/shared/booking-fields.js"></script>
   <script src="src/shared/pricing-note.js"></script>
+  <script src="src/shared/saga-invoice.js"></script>
   <script src="src/shared/timeline-adapter.js"></script>
   <script src="src/shared/booking-calendar.js"></script>
   <script src="src/shared/availability-timeline.js"></script>
-  <script src="src/shared/payment-request.js"></script>
   <script src="src/shared/camera-transform.js"></script>
   <script src="src/shared/timeline-sticky-labels.js"></script>
   <script src="app.js"></script>

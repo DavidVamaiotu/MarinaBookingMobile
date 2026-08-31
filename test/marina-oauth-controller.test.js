@@ -76,3 +76,18 @@ test("temporary refresh failures preserve the saved login while invalid grants c
   assert.equal(clearCalls, 1);
   assert.equal(controller.status().connected, false);
 });
+
+test("token scopes preserve write capabilities when returned as an array or comma-separated value", async () => {
+  const config = MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" });
+  const controller = new MarinaOAuthController({
+    config,
+    tokenStore: { setRefreshToken: async () => {}, hasRefreshTokenSync: () => false },
+    openExternal: async () => {}
+  });
+
+  await controller.applyToken({ access_token: "array-token", scope: ["resources:read", "bookings:read", "bookings:write"] });
+  assert.equal(MarinaConfig.capabilities(controller.status().effectiveScopes).canMutateBookings, true);
+
+  await controller.applyToken({ access_token: "comma-token", scope: "resources:read,bookings:read,bookings:write" });
+  assert.equal(MarinaConfig.capabilities(controller.status().effectiveScopes).canMutateBookings, true);
+});

@@ -37,7 +37,7 @@ test("invalid range selection explains the required dates in Romanian", () => {
   );
 });
 
-test("selected stays are sent with Booking Calendar check-in and checkout times", () => {
+test("selected stays retain the configured check-in and checkout times", () => {
   assert.deepEqual(toStayDateTimes(["2026-07-20", "2026-07-21", "2026-07-22"]), [
     "2026-07-20 15:00:01",
     "2026-07-21 00:00:00",

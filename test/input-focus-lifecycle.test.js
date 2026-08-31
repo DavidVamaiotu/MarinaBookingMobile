@@ -115,6 +115,4 @@ test("view and editor transitions cancel an active timeline capture before showi
       .filter((index) => index >= 0));
     assert.ok(cancelAt >= 0 && cancelAt < transitionAt, `${name} must cancel an active drag before changing the view`);
   }
-  const settingsOpen = sourceBetween('$("#openSettings").addEventListener("click"', '$("#closeSettingsDialog")');
-  assert.match(settingsOpen, /cancelDrag\(\)/);
 });

@@ -10,7 +10,14 @@
   const DESKTOP_REDIRECT_URI = "ro.marinapark.booking.desktop://oauth/callback";
   const MOBILE_REDIRECT_URI = "ro.marinapark.booking.mobile://oauth/callback";
   const SUPPORTED_PROVIDERS = ["existing", "marina"];
-  const PUBLIC_CONFIG_KEYS = ["MARINA_INTEGRATION_ENABLED", "MARINA_API_BASE_URL", "MARINA_OAUTH_CLIENT_ID", "MARINA_OAUTH_SCOPES"];
+  const PUBLIC_CONFIG_KEYS = [
+    "MARINA_INTEGRATION_ENABLED",
+    "MARINA_API_BASE_URL",
+    "MARINA_OAUTH_CLIENT_ID",
+    "MARINA_OAUTH_SCOPES",
+    "MARINA_ROOMS_WORKSPACE_ID",
+    "MARINA_CAMPING_WORKSPACE_ID"
+  ];
 
   function booleanValue(value, fallback = false) {
     if (value === undefined || value === null || value === "") return fallback;
@@ -38,6 +45,15 @@
     return url.toString().replace(/\/+$/, "");
   }
 
+  function normalizeWorkspaceId(value) {
+    if (value === undefined || value === null || String(value).trim() === "") return null;
+    const workspaceId = Number(String(value).trim());
+    if (!Number.isSafeInteger(workspaceId) || workspaceId < 1) {
+      throw Object.assign(new Error("Identificatorul workspace-ului Marina este invalid."), { code: "marina_workspace_id_invalid" });
+    }
+    return workspaceId;
+  }
+
   function environmentValue(name, environment = null) {
     if (environment && Object.prototype.hasOwnProperty.call(environment, name)) return environment[name];
     if (typeof globalThis !== "undefined" && globalThis.__MARINA_CONFIG__ && Object.prototype.hasOwnProperty.call(globalThis.__MARINA_CONFIG__, name)) {
@@ -60,11 +76,18 @@
   function createConfig(environment = null, persisted = null) {
     const scopes = normalizeScopes(configValue("MARINA_OAUTH_SCOPES", environment, persisted) || DEFAULT_SCOPES);
     let apiBaseUrl = DEFAULT_API_BASE_URL;
+    const workspaceIds = { rooms: null, camping: null };
     let configurationError = null;
     try {
       apiBaseUrl = normalizeBaseUrl(configValue("MARINA_API_BASE_URL", environment, persisted) || DEFAULT_API_BASE_URL);
     } catch (error) {
       configurationError = error.code || "marina_invalid_url";
+    }
+    try {
+      workspaceIds.rooms = normalizeWorkspaceId(configValue("MARINA_ROOMS_WORKSPACE_ID", environment, persisted));
+      workspaceIds.camping = normalizeWorkspaceId(configValue("MARINA_CAMPING_WORKSPACE_ID", environment, persisted));
+    } catch (error) {
+      configurationError ||= error.code || "marina_workspace_id_invalid";
     }
     const clientId = String(configValue("MARINA_OAUTH_CLIENT_ID", environment, persisted) || "").trim();
     const enabled = booleanValue(configValue("MARINA_INTEGRATION_ENABLED", environment, persisted), false);
@@ -73,6 +96,7 @@
       configured: enabled && Boolean(clientId) && !configurationError,
       configurationError,
       apiBaseUrl,
+      workspaceIds: Object.freeze(workspaceIds),
       clientId,
       scopes,
       scopeString: scopes.join(" "),
@@ -86,7 +110,9 @@
       MARINA_INTEGRATION_ENABLED: config.enabled ? "true" : "false",
       MARINA_API_BASE_URL: config.apiBaseUrl,
       MARINA_OAUTH_CLIENT_ID: config.clientId,
-      MARINA_OAUTH_SCOPES: config.scopeString
+      MARINA_OAUTH_SCOPES: config.scopeString,
+      MARINA_ROOMS_WORKSPACE_ID: config.workspaceIds.rooms === null ? "" : String(config.workspaceIds.rooms),
+      MARINA_CAMPING_WORKSPACE_ID: config.workspaceIds.camping === null ? "" : String(config.workspaceIds.camping)
     });
   }
 
@@ -117,7 +143,8 @@
       bookingsWrite: effective.has("bookings:write"),
       canLoadCalendar: effective.has("resources:read") && effective.has("bookings:read"),
       canMutateBookings: effective.has("bookings:write"),
-      canManageResources: effective.has("resources:write")
+      canManageResources: effective.has("resources:write"),
+      canSendPaymentEmail: effective.has("bookings:write")
     });
   }
 
@@ -131,6 +158,7 @@
     booleanValue,
     normalizeScopes,
     normalizeBaseUrl,
+    normalizeWorkspaceId,
     createConfig,
     hasExplicitConfig,
     publicEnvironment,

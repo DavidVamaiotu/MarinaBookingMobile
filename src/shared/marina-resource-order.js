@@ -21,8 +21,8 @@ function compareMarinaResources(left, right) {
     || String(left?.providerId ?? left?.id ?? "").localeCompare(String(right?.providerId ?? right?.id ?? ""));
 }
 
-function orderMarinaResources(resources) {
-  return [...(resources || [])].filter((resource) => !isIgnoredMarinaResource(resource)).sort(compareMarinaResources);
+function orderMarinaResources(resources, { ignoreLegacy32 = true } = {}) {
+  return [...(resources || [])].filter((resource) => !ignoreLegacy32 || !isIgnoredMarinaResource(resource)).sort(compareMarinaResources);
 }
 
 module.exports = { compareMarinaResources, isIgnoredMarinaResource, orderMarinaResources };

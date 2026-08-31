@@ -23,3 +23,21 @@ test("pricing note rejects missing cost and deposits above the saved total", () 
   assert.throws(() => PricingNote.update("Avans: 30, Cost: 100, Rest: 70", 101), /între zero/);
   assert.throws(() => PricingNote.update("Avans: 30, Cost: 100, Rest: 70", -1), /între zero/);
 });
+
+test("pricing note update removes stale canonical and legacy duplicates", () => {
+  const duplicated = [
+    "Sosire târzie",
+    "",
+    "Cost total: 400 RON, Depozit: 180 RON, Rest: 220 RON",
+    "",
+    "Cost total: 400 RON, Depozit: 120 RON, Rest: 280 RON",
+    "",
+    "Avans: 90, Cost: 400, Rest: 310",
+    "",
+    "Parcare inclusă"
+  ].join("\n");
+  assert.equal(
+    PricingNote.update(duplicated, 180, 400).note,
+    "Sosire târzie\n\nCost total: 400 RON, Depozit: 180 RON, Rest: 220 RON\n\nParcare inclusă"
+  );
+});

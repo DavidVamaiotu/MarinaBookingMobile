@@ -97,6 +97,7 @@ test("a recalculated quote accepts zero deposit and recomputes the balance", () 
 test("Edit Client displays the total and deposit returned by the new quote", async () => {
   const sandbox = {
     activeWorkspace: "rooms",
+    isMarinaSource: () => false,
     selectedBookingId: "booking-1",
     quoteRequestId: 7,
     quoteState: "stale",
@@ -161,7 +162,7 @@ test("Edit Client shows a specific error when a recalculated quote has no valid 
   assert.equal(sandbox.createQuote, null);
   assert.deepEqual(
     pricingMessages.at(-1),
-    ["Booking Calendar nu a returnat un cost și un avans valide.", "unavailable"]
+    ["Marina nu a returnat un cost și un avans valide.", "unavailable"]
   );
 });
 
@@ -209,6 +210,7 @@ test("resource availability keeps selected dates unless the provider confirms a 
     availabilityRequestId: 0,
     availabilityState: "idle",
     activeWorkspace: "rooms",
+    isMarinaSource: () => false,
     selectedBookingId: "local-71",
     clearTimeout() {},
     setTimeout(callback) {
@@ -244,7 +246,7 @@ test("resource availability keeps selected dates unless the provider confirms a 
 
   assert.equal(availabilityCalls.length, 1);
   assert.equal(availabilityCalls[0].resourceId, 22);
-  assert.equal(availabilityCalls[0].excludeBookingId, 71);
+  assert.equal(availabilityCalls[0].excludeBookingId, null);
   assert.equal(resetArgs[0], "Datele selectate sunt deja ocupate în noua unitate. Selectați alt interval.");
   assert.equal(resetArgs[1], "unavailable");
   assert.equal(resetArgs[2].preserveDetailsSelection, true);
@@ -265,7 +267,8 @@ test("Marina Edit Client bypasses unsupported availability exclusion for its cur
     availabilityTimer: null,
     availabilityRequestId: 0,
     availabilityState: "idle",
-    activeWorkspace: "marina",
+    activeWorkspace: "rooms",
+    isMarinaSource: (source) => source === "rooms" || source === "camping",
     selectedBookingId: "marina:71",
     clearTimeout() {},
     setTimeout(callback) { pendingCheck = callback(); return 1; },
@@ -505,31 +508,19 @@ test("save preserves the old note and deposit when preservation is checked", asy
   assert.equal(preserving.closeCount(), 1);
 });
 
-test("save persists the newly quoted note and deposit only when preservation is unchecked", async () => {
-  const confirmedNote = "Nota veche fără preț Cost total: 225 RON, Depozit: 75 RON, Rest: 150 RON";
-  const replacing = saveHarness({ keepSavedNoteAndDeposit: false, confirmedNote });
+test("save persists the newly quoted Marina note when preservation is unchecked", async () => {
+  const replacing = saveHarness({ keepSavedNoteAndDeposit: false });
   await replacing.saveBookingDetails(replacing.booking, replacing.form);
   assert.equal(JSON.stringify(replacing.refreshCalls), JSON.stringify([{ forceFresh: true }]));
-  assert.deepEqual(replacing.events, ["editBooking", "updateDeposit", "close"]);
+  assert.deepEqual(replacing.events, ["editBooking", "close"]);
   assert.equal(replacing.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
-  assert.equal(replacing.calls[1][0], "updateDeposit");
-  assert.equal(
-    JSON.stringify(replacing.calls[1][2]),
-    JSON.stringify({
-      deposit: 75,
-      total: 225,
-      note: confirmedNote,
-      source: "rooms"
-    })
-  );
-  assert.equal(replacing.form.elements.note.value, confirmedNote);
   assert.equal(replacing.closeCount(), 1);
 });
 
-test("Marina note checkbox replaces only the quoted pricing line without a WP deposit write", async () => {
+test("Marina note checkbox replaces only the quoted pricing line without a separate deposit write", async () => {
   const currentNote = "Sosește după ora 18.\nCost total: 200 RON, Depozit: 50 RON, Rest: 150 RON\nLocul 12";
   const harness = saveHarness({
-    workspace: "marina",
+    workspace: "rooms",
     keepSavedNoteAndDeposit: false,
     pricingChanged: false,
     note: currentNote
@@ -546,7 +537,7 @@ test("Marina note checkbox replaces only the quoted pricing line without a WP de
 });
 
 test("Marina note checkbox preserves the manual note when checked", async () => {
-  const harness = saveHarness({ workspace: "marina", pricingChanged: false });
+  const harness = saveHarness({ workspace: "rooms", pricingChanged: false });
 
   await harness.saveBookingDetails(harness.booking, harness.form);
 
@@ -573,17 +564,6 @@ test("a failed Edit Client reservation update leaves the sidebar and draft intac
   assert.equal(harness.form.elements.end.value, "2026-08-06");
 });
 
-test("a failed deposit update leaves the sidebar open and reflects the already-saved recalculated note", async () => {
-  const confirmedNote = "Nota veche fără preț Cost total: 225 RON, Depozit: 75 RON, Rest: 150 RON";
-  const harness = saveHarness({ keepSavedNoteAndDeposit: false, failDeposit: true, confirmedNote });
-
-  await assert.rejects(() => harness.saveBookingDetails(harness.booking, harness.form), /deposit failed/);
-
-  assert.deepEqual(harness.events, ["editBooking", "updateDeposit"]);
-  assert.equal(harness.closeCount(), 0);
-  assert.equal(harness.form.elements.note.value, confirmedNote);
-});
-
 test("Marina Edit Client renders the cached booking while hydrating details in the background", async () => {
   const cached = { localId: "marina:77", formData: { name: { value: "" } }, version: 1 };
   const detailed = { localId: "marina:77", formData: { name: { value: "Ana" }, phone: { value: "0711111111" } }, version: 4 };
@@ -595,7 +575,7 @@ test("Marina Edit Client renders the cached booking while hydrating details in t
     ["openBookingDetails"],
     "openBookingDetails",
     {
-      activeWorkspace: "marina",
+      activeWorkspace: "rooms",
       selectedBookingId: cached.localId,
       bookingById: () => cached,
       window: { marina: { getBooking(id) { loaded.push(id); return detailsRequest; } } },
@@ -615,8 +595,8 @@ test("Marina Edit Client renders the cached booking while hydrating details in t
   assert.equal(rendered.length, 1);
 });
 
-test("WordPress Edit Client continues to render from its existing cache", async () => {
-  const cached = { localId: "server:77", formData: { name: { value: "Ana" } } };
+test("Edit Client renders from cache and revalidates Marina details", async () => {
+  const cached = { localId: "marina:77", formData: { name: { value: "Ana" } } };
   let remoteReads = 0;
   let rendered;
   const openBookingDetails = evaluate(
@@ -633,6 +613,6 @@ test("WordPress Edit Client continues to render from its existing cache", async 
 
   await openBookingDetails(cached.localId);
 
-  assert.equal(remoteReads, 0);
+  assert.equal(remoteReads, 1);
   assert.equal(rendered, cached);
 });

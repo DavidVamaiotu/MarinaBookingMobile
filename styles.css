@@ -139,6 +139,7 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .details-section>header p{margin:0;color:var(--muted);font-size:11px;line-height:1.45;text-transform:none;letter-spacing:0}
 .details-section label small{color:var(--muted);font-size:10px;font-weight:400}
 .field-grid .span-2{grid-column:1/-1}
+.facility-options{display:grid;gap:7px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#f7f6f1}.facility-options[hidden]{display:none}.facility-options::before{content:"Facilități";font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.facility-option{display:flex!important;grid-template-columns:auto 1fr;align-items:center;gap:8px;font-size:13px!important;color:var(--ink)!important}.facility-option input{width:auto!important;margin:0}.facility-option small{color:var(--muted)}
 .details-save{width:100%}
 .details-reservation-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .details-reservation-actions button{width:100%}
@@ -147,7 +148,7 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 @media(max-width:900px){#detailsPanel{width:min(560px,72vw)}}
 
-/* Booking Calendar-style create form. */
+/* Calendar create form. */
 #createDialog{width:min(734px,calc(100vw - 28px));max-height:96vh;border-color:#d9d9d9;border-radius:8px;background:#fff;color:#303030}
 #createDialog::backdrop{background:rgba(25,31,28,.48)}
 .create-booking-form{display:grid;gap:18px;padding:18px 42px 22px;font-family:Arial,sans-serif;font-size:12px}
@@ -314,6 +315,49 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .is-mobile-app .availability-cell[data-am="occupied"][data-pm="available"]::before{clip-path:polygon(0 0,100% 0,0 100%)}
 .is-mobile-app .availability-cell>span{position:relative;z-index:1}
 
+/* Local SAGA XML invoice export dialog. */
+#sagaInvoiceDialog{max-height:calc(100dvh - 32px);border:1px solid #e3e4e1;border-radius:14px;background:#fff;box-shadow:0 28px 80px rgba(24,35,32,.28);color:#111;font-family:Rubik,system-ui,sans-serif;overflow:hidden}
+#sagaInvoiceDialog::backdrop{background:rgba(32,42,39,.38);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+#sagaInvoiceForm{display:block;max-height:calc(100dvh - 32px);padding:0;overflow-y:auto;overscroll-behavior:contain}
+#sagaInvoiceForm>header{display:flex;align-items:flex-start;justify-content:space-between;padding:25px 30px 18px;border:0}
+#sagaInvoiceForm>header p{color:#687974;font-size:11px;font-weight:650;letter-spacing:.045em}
+#sagaInvoiceForm>header h2{margin-top:7px;color:#090b0a;font-size:23px;font-weight:650;line-height:1.2;letter-spacing:-.025em}
+#sagaInvoiceForm>header .icon{display:grid;width:42px;height:42px;padding:0;place-items:center;border:1px solid #dedfdd;border-radius:13px;background:#fff;color:#111;font-size:29px;font-weight:300;line-height:1}
+#sagaInvoiceForm>header .icon:hover{border-color:#c9ceca;background:#f5f7f6}
+#sagaInvoiceForm>header .icon:focus-visible{outline:3px solid rgba(8,116,123,.2);outline-offset:2px;border-color:#08747b}
+.saga-invoice-preview,.saga-invoice-fields{display:grid;gap:10px;margin:0 30px;padding:16px 18px;border:1px solid #dfe4df;border-radius:10px;background:#fff}
+.saga-invoice-preview{background:linear-gradient(110deg,#f0f9f9,#fbfdfc);border-color:#bfdee0}
+.saga-invoice-preview h3,.saga-invoice-fields h3{margin:0;color:#30403b;font-size:13px;font-weight:700}
+.saga-invoice-inline-note{margin:0;color:#77817d;font-size:11px;line-height:1.4}
+.saga-invoice-preview p{margin:0;color:#586661;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.saga-invoice-preview p:first-of-type{color:#111817;font-size:16px;font-weight:650}
+.saga-invoice-form>.availability{margin:14px 30px 0}
+.saga-invoice-fields{margin-top:14px}
+.saga-invoice-form .field-grid{gap:10px 12px}
+.saga-invoice-form .field-grid label{color:#5f6965;font-size:12px}
+.saga-invoice-form .field-grid input,.saga-invoice-form .field-grid select{min-height:42px}
+.saga-invoice-status{margin:14px 30px 0;padding:10px 12px;border-radius:8px;background:#fff8e7;color:#7b5d18;font-size:12px;line-height:1.4}
+.saga-invoice-status:empty{display:none}
+.saga-invoice-form>footer{display:flex;justify-content:flex-end;gap:8px;margin:18px 30px 24px;padding-top:14px;border-top:1px solid var(--line)}
+#sagaInvoiceForm button:disabled{cursor:not-allowed;opacity:.48}
+
+/* Application settings, including persistent SAGA supplier details. */
+#settingsDialog{max-height:calc(100dvh - 32px);border:1px solid #e3e4e1;border-radius:14px;background:#fff;box-shadow:0 28px 80px rgba(24,35,32,.28);color:#111;font-family:Rubik,system-ui,sans-serif;overflow:hidden}
+#settingsDialog::backdrop{background:rgba(32,42,39,.38);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+#settingsForm{display:block;max-height:calc(100dvh - 32px);padding:0;overflow-y:auto;overscroll-behavior:contain}
+#settingsForm>header{display:flex;align-items:flex-start;justify-content:space-between;padding:25px 30px 18px;border:0}
+#settingsForm>header p{color:#687974;font-size:11px;font-weight:650;letter-spacing:.045em}
+#settingsForm>header h2{margin-top:7px;color:#090b0a;font-size:23px;font-weight:650;line-height:1.2;letter-spacing:-.025em}
+#settingsForm>header .icon{display:grid;width:42px;height:42px;padding:0;place-items:center;border:1px solid #dedfdd;border-radius:13px;background:#fff;color:#111;font-size:29px;font-weight:300;line-height:1;transition:background .15s ease,border-color .15s ease}
+#settingsForm>header .icon:hover{border-color:#c9ceca;background:#f5f7f6}
+#settingsForm .settings-section{display:grid;gap:10px;margin:0 30px;padding:16px 18px;border:1px solid #dfe4df;border-radius:10px;background:#f8fbf9}
+#settingsForm .settings-section h3{margin:0;color:#30403b;font-size:13px;font-weight:700}
+#settingsForm .settings-section button{justify-self:start}
+#settingsForm>.saga-invoice-fields{margin-top:14px}
+#settingsForm>.saga-invoice-status{margin:14px 30px 0}
+#settingsForm>footer{display:flex;justify-content:flex-end;gap:8px;margin:18px 30px 24px;padding-top:14px;border-top:1px solid var(--line)}
+#settingsForm button:disabled{cursor:not-allowed;opacity:.48}
+
 /* Advancement popup: self-contained so shared dialogs and panels remain unchanged. */
 #paymentDialog{max-height:calc(100dvh - 32px);border:1px solid #e3e4e1;border-radius:14px;background:#fff;box-shadow:0 28px 80px rgba(24,35,32,.28);color:#111;font-family:Rubik,system-ui,sans-serif;overflow:hidden}
 #paymentDialog::backdrop{background:rgba(32,42,39,.38);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
@@ -363,12 +407,38 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
 .payment-status{margin:10px 0 0;padding:10px 12px;border-radius:8px;background:#f3f6f4;color:#58645f;font-size:12px;line-height:1.4}
 .payment-status:empty{display:none}
 @media(max-width:900px){
+  #settingsDialog{inset:auto;width:min(680px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:auto;border:1px solid #e3e4e1;border-radius:14px}
+  #settingsForm{min-height:0;max-height:calc(100dvh - 24px);padding:0;overflow-y:auto}
+  #settingsForm>header{position:static;padding:22px 26px 17px;background:#fff}
+  #settingsForm .settings-section,#settingsForm .saga-invoice-fields{margin-inline:26px}
+  #settingsForm>.saga-invoice-status{margin-inline:26px}
+  #settingsForm>footer{margin-inline:26px}
+  #sagaInvoiceDialog{inset:auto;width:min(680px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:auto;border:1px solid #e3e4e1;border-radius:14px}
+  #sagaInvoiceForm{min-height:0;max-height:calc(100dvh - 24px);padding:0;overflow-y:auto}
+  #sagaInvoiceForm>header{position:static;padding:22px 26px 17px;background:#fff}
+  .saga-invoice-preview,.saga-invoice-fields{margin-inline:26px}
+  .saga-invoice-form>.availability,.saga-invoice-status{margin-inline:26px}
+  .saga-invoice-form>footer{margin-inline:26px}
   #paymentDialog{inset:auto;width:min(610px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:auto;border:1px solid #e3e4e1;border-radius:14px}
   #paymentForm{min-height:0;max-height:calc(100dvh - 24px);padding:0;overflow-y:auto;align-content:normal}
   #paymentForm>header{position:static;padding:23px 26px 18px;background:#fff}
   .payment-section{padding:0 26px 22px}
 }
 @media(max-width:620px){
+  #settingsDialog{inset:0;width:100vw;max-width:none;max-height:100dvh;height:100dvh;margin:0;border:0;border-radius:0}
+  #settingsForm{height:100%;max-height:100dvh}
+  #settingsForm>header{position:sticky;top:0;z-index:3;padding:18px 18px 14px;border-bottom:1px solid #edf0ed;background:rgba(255,255,255,.96);backdrop-filter:blur(8px)}
+  #settingsForm>header h2{font-size:20px}
+  #settingsForm .settings-section,#settingsForm .saga-invoice-fields{margin-inline:18px;padding:14px}
+  #settingsForm>.saga-invoice-status{margin-inline:18px}
+  #settingsForm>footer{margin:18px 18px max(20px,env(safe-area-inset-bottom))}
+  #sagaInvoiceDialog{inset:0;width:100vw;max-height:100dvh;height:100dvh;margin:0;border:0;border-radius:0}
+  #sagaInvoiceForm{height:100%;max-height:100dvh}
+  #sagaInvoiceForm>header{position:sticky;top:0;z-index:3;padding:18px 18px 14px;border-bottom:1px solid #edf0ed;background:rgba(255,255,255,.96);backdrop-filter:blur(8px)}
+  #sagaInvoiceForm>header h2{font-size:20px}
+  .saga-invoice-preview,.saga-invoice-fields{margin-inline:18px;padding:14px}
+  .saga-invoice-form>.availability,.saga-invoice-status{margin-inline:18px}
+  .saga-invoice-form>footer{margin:18px 18px max(20px,env(safe-area-inset-bottom))}
   #paymentDialog{inset:0;width:100vw;max-height:100dvh;height:100dvh;margin:0;border:0;border-radius:0}
   #paymentForm{height:100%;max-height:100dvh}
   #paymentForm>header{position:sticky;top:0;z-index:3;padding:18px 18px 14px;border-bottom:1px solid #edf0ed;background:rgba(255,255,255,.96);backdrop-filter:blur(8px)}
@@ -379,6 +449,12 @@ html,body{width:100%;height:100%;overflow:hidden}*{box-sizing:border-box}body{ma
   .payment-controls{grid-template-columns:1fr;gap:12px}.payment-controls button{width:100%}
 }
 @media(max-width:370px){#paymentForm>header{padding-inline:14px}.payment-section{padding-inline:14px}.payment-verification>div{grid-template-columns:28px minmax(0,1fr);gap:8px}.payment-verification-icon{width:22px;height:22px}}
+@media(max-width:370px){#settingsForm>header{padding-inline:14px}#settingsForm .settings-section,#settingsForm .saga-invoice-fields{margin-inline:14px}#settingsForm>.saga-invoice-status{margin-inline:14px}#settingsForm>footer{margin-inline:14px}}
+@media(max-width:370px){#sagaInvoiceForm>header{padding-inline:14px}.saga-invoice-preview,.saga-invoice-fields{margin-inline:14px}.saga-invoice-form>.availability,.saga-invoice-status{margin-inline:14px}.saga-invoice-form>footer{margin-inline:14px}}
+.is-mobile-app #settingsDialog{position:fixed;inset:auto;top:50%;left:50%;width:min(680px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:0;border:1px solid #e3e4e1;border-radius:14px;transform:translate(-50%,-50%)}
+.is-mobile-app #settingsForm{min-height:0;height:auto;max-height:calc(100dvh - 24px)}
+.is-mobile-app #sagaInvoiceDialog{position:fixed;inset:auto;top:50%;left:50%;width:min(680px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:0;border:1px solid #e3e4e1;border-radius:14px;transform:translate(-50%,-50%)}
+.is-mobile-app #sagaInvoiceForm{min-height:0;height:auto;max-height:calc(100dvh - 24px)}
 .is-mobile-app #paymentDialog{position:fixed;inset:auto;top:50%;left:50%;width:min(610px,calc(100vw - 24px));max-width:none;height:auto;max-height:calc(100dvh - 24px);margin:0;border:1px solid #e3e4e1;border-radius:14px;transform:translate(-50%,-50%)}
 .is-mobile-app #paymentForm{min-height:0;height:auto;max-height:calc(100dvh - 24px)}
 

@@ -9,6 +9,7 @@ test("Marina integration is disabled by default and exposes safe defaults", () =
   assert.equal(config.enabled, false);
   assert.equal(config.configured, false);
   assert.equal(config.apiBaseUrl, "https://booking.husi.ro");
+  assert.deepEqual(config.workspaceIds, { rooms: null, camping: null });
   assert.deepEqual(config.scopes, ["resources:read", "resources:write", "bookings:read", "bookings:write"]);
   assert.equal(config.redirectUris.desktop, MarinaConfig.DESKTOP_REDIRECT_URI);
 });
@@ -18,10 +19,13 @@ test("Marina configuration normalizes flags, scopes, and provider-qualified iden
     MARINA_INTEGRATION_ENABLED: "true",
     MARINA_API_BASE_URL: "https://booking.husi.ro/",
     MARINA_OAUTH_CLIENT_ID: " public-client ",
-    MARINA_OAUTH_SCOPES: "bookings:write resources:read bookings:write"
+    MARINA_OAUTH_SCOPES: "bookings:write resources:read bookings:write",
+    MARINA_ROOMS_WORKSPACE_ID: " 2 ",
+    MARINA_CAMPING_WORKSPACE_ID: " 3 "
   });
   assert.equal(config.configured, true);
   assert.equal(config.clientId, "public-client");
+  assert.deepEqual(config.workspaceIds, { rooms: 2, camping: 3 });
   assert.deepEqual(config.scopes, ["bookings:write", "resources:read"]);
   assert.equal(MarinaConfig.providerKey("existing", 42), "existing:42");
   assert.equal(MarinaConfig.providerKey("marina", 42), "marina:42");
@@ -33,7 +37,8 @@ test("Marina configuration normalizes flags, scopes, and provider-qualified iden
     bookingsWrite: true,
     canLoadCalendar: false,
     canMutateBookings: true,
-    canManageResources: false
+    canManageResources: false,
+    canSendPaymentEmail: true
   });
 });
 
@@ -44,22 +49,38 @@ test("Marina URLs reject non-HTTPS endpoints", () => {
   assert.equal(config.configurationError, "marina_https_required");
 });
 
+test("Marina workspace IDs must be positive safe integers", () => {
+  assert.equal(MarinaConfig.normalizeWorkspaceId("15"), 15);
+  assert.equal(MarinaConfig.normalizeWorkspaceId(""), null);
+  for (const value of ["0", "-1", "1.5", "not-a-workspace"]) {
+    assert.throws(() => MarinaConfig.normalizeWorkspaceId(value), { code: "marina_workspace_id_invalid" });
+  }
+  const config = MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "client", MARINA_ROOMS_WORKSPACE_ID: "invalid" });
+  assert.equal(config.configured, false);
+  assert.equal(config.configurationError, "marina_workspace_id_invalid");
+});
+
 test("Marina public configuration persists across normal launches and runtime values take precedence", () => {
   const persisted = {
     MARINA_INTEGRATION_ENABLED: "true",
     MARINA_API_BASE_URL: "https://booking.husi.ro/",
     MARINA_OAUTH_CLIENT_ID: "saved-public-client",
-    MARINA_OAUTH_SCOPES: "resources:read bookings:read"
+    MARINA_OAUTH_SCOPES: "resources:read bookings:read",
+    MARINA_ROOMS_WORKSPACE_ID: "7",
+    MARINA_CAMPING_WORKSPACE_ID: "8"
   };
   const restored = MarinaConfig.createConfig({}, persisted);
   assert.equal(restored.configured, true);
   assert.equal(restored.clientId, "saved-public-client");
+  assert.deepEqual(restored.workspaceIds, { rooms: 7, camping: 8 });
   assert.deepEqual(restored.scopes, ["resources:read", "bookings:read"]);
   assert.deepEqual(MarinaConfig.publicEnvironment(restored), {
     MARINA_INTEGRATION_ENABLED: "true",
     MARINA_API_BASE_URL: "https://booking.husi.ro",
     MARINA_OAUTH_CLIENT_ID: "saved-public-client",
-    MARINA_OAUTH_SCOPES: "resources:read bookings:read"
+    MARINA_OAUTH_SCOPES: "resources:read bookings:read",
+    MARINA_ROOMS_WORKSPACE_ID: "7",
+    MARINA_CAMPING_WORKSPACE_ID: "8"
   });
   assert.equal(MarinaConfig.createConfig({ MARINA_OAUTH_CLIENT_ID: "runtime-client" }, persisted).clientId, "runtime-client");
   assert.equal(MarinaConfig.hasExplicitConfig({}), false);

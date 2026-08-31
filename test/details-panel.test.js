@@ -95,14 +95,14 @@ test("reservation editor reports invalid fields instead of letting native valida
   assert.match(appSource, /Rezervarea nu a mai fost găsită/);
 });
 
-test("technical WordPress fields stay hidden while client email remains editable", () => {
+test("technical API fields stay hidden while client email remains editable", () => {
   assert.match(appSource, /const formData = \{ \.\.\.booking\.formData \}/);
   assert.match(appSource, /BookingFields\.matchesName\(name, "firstName", "lastName", "email", "phone", "adults", "children"\)/);
   assert.match(indexSource, /Email<input name="email" type="email"/);
   assert.match(appSource, /BookingFields\.assign\(formData, "email"/);
 });
 
-test("common WordPress fields receive understandable labels", () => {
+test("common API fields receive understandable labels", () => {
   assert.match(appSource, /visitors: "Număr adulți"/);
   assert.match(appSource, /children: "Număr copii"/);
   assert.match(appSource, /details: "Observații client"/);
@@ -120,13 +120,13 @@ test("adult and child counts are always editable, including zero children", () =
   assert.match(appSource, /if \(booking\.formData\?\.children_val\) formData\.children_val = \{ \.\.\.booking\.formData\.children_val, value: children \}/);
 });
 
-test("extra bed is edited as a checkbox and serializes to a WordPress boolean value", () => {
+test("extra bed is edited as a checkbox and serializes to an API boolean value", () => {
   assert.match(appSource, /name === "pat-suplimentar" \|\| isElectricityField\(name\)/);
   assert.match(appSource, /<input type="checkbox" \$\{attributes\}/);
   assert.match(appSource, /input\.type === "checkbox" \? \(input\.checked \? "true" : "no"\)/);
 });
 
-test("reservation details expose only requested conditional WordPress fields", () => {
+test("reservation details expose only requested conditional API fields", () => {
   assert.match(appSource, /BookingFields\.isDetailsField\(name, field\)/);
   assert.match(appSource, /name === "pat-suplimentar"\) return activeWorkspace === "rooms"/);
   assert.match(appSource, /isElectricityField\(name\)\) return activeWorkspace === "camping"/);
@@ -148,7 +148,13 @@ test("reservation details expose approval and trash actions with optional email 
   assert.match(appSource, /detailsStatus[\s\S]*runApiAction\("setStatus", booking\.localId, \{ status:[\s\S]*sendEmail: Boolean\(form\.elements\.sendEmail\.checked\), source \}/);
   assert.match(appSource, /detailsTrash[\s\S]*runApiAction\("setTrash", booking\.localId, \{ trashed:[\s\S]*sendEmail: Boolean\(form\.elements\.sendEmail\.checked\), source \}/);
   assert.match(appSource, /detailsStatus"\)\.textContent = approved \? "Pune în așteptare" : "Aprobă"/);
-  assert.match(appSource, /detailsTrash"\)\.textContent = booking\.trashed \? "Restabilește" : "Gunoi"/);
+  assert.match(appSource, /detailsTrash"\)\.textContent = booking\.trashed \? "Restaurează rezervarea" : "Anulează rezervarea"/);
+});
+
+test("booking popup actions suppress notifications while Edit Client uses its checkbox", () => {
+  assert.match(appSource, /bookingMenuStatus[\s\S]*runApiAction\("setStatus", booking\.localId, \{ status:[\s\S]*sendEmail: false, source \}/);
+  assert.match(appSource, /bookingMenuTrash[\s\S]*runApiAction\("setTrash", booking\.localId, \{ trashed:[\s\S]*sendEmail: false, source \}/);
+  assert.match(appSource, /const editInput = \{[\s\S]*sendEmail: Boolean\(form\.elements\.sendEmail\.checked\)/);
 });
 
 test("rooms hide camping electricity without deleting its stored value", () => {
@@ -171,11 +177,20 @@ test("new reservations default to pending with notifications opt-in", () => {
   assert.match(appSource, /sendEmail: false, source/);
 });
 
-test("new room and camping reservations save client details as the native WordPress textarea field", () => {
+test("new room and camping reservations save client details as the native textarea field", () => {
   assert.match(indexSource, /Detalii client:<textarea name="details" rows="3"/);
   assert.equal((indexSource.match(/name="details"/g) || []).length, 1);
   assert.match(appSource, /\.\.\.\(form\.elements\.details\.value\.trim\(\) \? \{ details: \{ value: form\.elements\.details\.value, type: "textarea" \} \} : \{\}\)/);
   assert.match(stylesSource, /\.create-client-fields input,\.create-client-fields select,\.create-client-fields textarea/);
+});
+
+test("facility pricing controls are populated from Marina instead of hardcoded amounts", () => {
+  assert.match(indexSource, /id="createFacilities"/);
+  assert.match(indexSource, /id="detailsFacilities"/);
+  assert.match(appSource, /function selectedFacilityIds/);
+  assert.match(appSource, /facilityIds: selectedFacilityIds\(form\)/);
+  assert.match(appSource, /pricePerNightMinor/);
+  assert.match(appSource, /renderFacilityOptions\(form, booking\)/);
 });
 
 test("booking details expose separate queueable deposit and payment-email actions", () => {
@@ -197,21 +212,27 @@ test("booking details expose separate queueable deposit and payment-email action
   assert.match(appSource, /requestPayment: \["Se programează emailul de plată…", "Emailul de plată a fost programat\."\]/);
 });
 
-test("Marina keeps the payment menu for Avans while deferring the email action", () => {
+test("Marina exposes the payment menu for Avans and payment email", () => {
   const start = appSource.indexOf("function populateBookingMenu");
   const end = appSource.indexOf("function prepareBookingMenuPosition", start);
   const menuSource = appSource.slice(start, end);
   assert.match(menuSource, /bookingPaymentMenuToggle[\s\S]*parentElement\.hidden = false/);
-  assert.match(menuSource, /bookingMenuSendPayment[\s\S]*hidden = activeWorkspace === "marina"/);
+  assert.match(menuSource, /bookingMenuSendPayment[\s\S]*hidden = !marinaWritable/);
 });
 
-test("payment popup trusts the WordPress snapshot and shows its note and database deposit", () => {
+test("Marina trash actions remain clickable and confirm trash or restore", () => {
+  assert.equal((appSource.match(/booking\.trashed \? "Confirmi restaurarea rezervării Marina\?" : "Confirmi anularea rezervării Marina\?"/g) || []).length, 2);
+  assert.match(appSource, /bookingMenuTrash.*booking\.trashed \? "Restaurează" : "Anulează"/s);
+});
+
+test("payment popup trusts the Marina snapshot and shows its note and deposit", () => {
+  assert.doesNotMatch(appSource, /unresolvedPaymentCommand/);
   assert.match(appSource, /const serverNoteAvailable = typeof snapshot\?\.note === "string"/);
   assert.match(appSource, /const authoritativePaymentAvailable = Boolean\(snapshot && snapshotTotal !== null && databaseDeposit !== null\)/);
   assert.match(appSource, /paymentNoteText"\)\.textContent = note \|\| "Nu există notă\."/);
   assert.match(appSource, /paymentDatabaseDeposit"\)\.textContent = databaseDeposit === null/);
   assert.match(appSource, /paymentSnapshotLoading\.has\(booking\.localId\)[\s\S]*Verificare eșuată[\s\S]*Indisponibil/);
-  assert.match(appSource, /runApiAction\("updateDeposit", booking\.localId, \{ deposit: amount, total, note, source: activeWorkspace \}/);
+  assert.match(appSource, /runApiAction\("updateDeposit", booking\.localId, \{ deposit: amount, total, note, source \}/);
   assert.doesNotMatch(appSource, /if \(!current\) throw new Error\("Nota rezervării nu conține un Cost valid\."\)/);
 });
 
@@ -230,14 +251,20 @@ test("payment popup uses the dedicated responsive advancement layout", () => {
   assert.match(appSource, /paymentBalanceBadge"\)\.textContent = amountsAvailable/);
 });
 
-test("payment email refreshes the current deposit before sending when no deposit change is queued", () => {
+test("Marina payment email calls only the backend deposit payment-request flow", () => {
   const start = appSource.indexOf("async function queuePaymentEmail");
   const paymentEmail = appSource.slice(start, appSource.indexOf('$("#sendPaymentRequest")', start));
-  const refreshIndex = paymentEmail.indexOf('runApiAction("updateDeposit"');
-  const emailIndex = paymentEmail.indexOf('runApiAction("requestPayment"');
-  assert.ok(refreshIndex > 0);
-  assert.ok(emailIndex > refreshIndex);
-  assert.match(paymentEmail, /if \(!pendingDeposit\) \{[\s\S]*runApiAction\("updateDeposit", booking\.localId, \{ deposit, total, note, source \}/);
+  assert.match(paymentEmail, /send_email: true,[\s\S]*payment_type: "deposit",[\s\S]*payment_reason: "Avans rezervare",[\s\S]*idempotencyKey/);
+  assert.match(paymentEmail, /window\.marina\.getPayment\(booking\.localId, \{ source \}\)/);
+  assert.match(paymentEmail, /snapshot\?\.deposit/);
+  assert.match(paymentEmail, /cererea de plată a avansului de \$\{PricingNote\.formatAmount\(deposit\)\} lei/);
+  assert.match(paymentEmail, /const bookingId = booking\.providerId \|\| booking\.serverId/);
+  assert.match(paymentEmail, /bookingId,[\s\S]*source: "marina"/);
+  assert.match(paymentEmail, /marinaPaymentRequestKeys\.get\(attemptKey\) \|\| crypto\.randomUUID\(\)/);
+  assert.match(paymentEmail, /marinaPaymentRequestKeys\.delete\(attemptKey\);[\s\S]*return true/);
+  assert.doesNotMatch(paymentEmail, /PaymentRequest\.|updateDeposit|amount_minor|visitorbookingpayurl|plata-rezervare2/);
+  assert.match(appSource, /runApiAction\("updateDeposit", booking\.localId,[\s\S]*marinaPaymentRequestKeys\.delete\(`\$\{source\}:\$\{booking\.localId\}`\)/);
+  assert.match(appSource, /runExclusive\(`payment-request:\$\{activeWorkspace\}:\$\{booking\.localId\}`, \[\$\("#sendPaymentRequest"\), \$\("#bookingMenuSendPayment"\)\]/);
 });
 
 test("booking popup exposes deposit and payment email through a three-dot menu", () => {
