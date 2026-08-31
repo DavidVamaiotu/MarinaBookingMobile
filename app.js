@@ -1908,7 +1908,7 @@ function scheduleAvailabilityCheck({ resetSelectionOnUnavailable = false } = {})
     setCreateAvailability("Se verifică disponibilitatea…");
     updateCreateSubmitState();
     try {
-      const result = await window.marina.checkAvailability({ resourceId, dates: BookingCalendar.toStayDateTimes(rangeDates(start, end)), excludeBookingId, source });
+      const result = await window.marina.checkAvailability({ resourceId, dates: rangeDates(start, end), excludeBookingId, source });
       if (source !== activeWorkspace || requestId !== availabilityRequestId || Number(form.elements.resourceId.value) !== resourceId || form.elements.start.value !== start || form.elements.end.value !== end) return;
       if (!result.available && resetSelectionOnUnavailable) {
         resetCalendarSelection(

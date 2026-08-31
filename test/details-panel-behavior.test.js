@@ -222,7 +222,7 @@ test("resource availability keeps selected dates unless the provider confirms a 
     bookingById() { return { serverId: 71 }; },
     normalizedBookingDateRange() { return { start: "2026-08-01", end: "2026-08-02", valid: true }; },
     rangeDates(start, end) { return [start, end]; },
-    BookingCalendar: { toStayDateTimes(dates) { return dates; } },
+    BookingCalendar: { toStayDateTimes() { throw new Error("availability must use checkout-exclusive dates"); } },
     window: {
       marina: {
         async checkAvailability(input) {
@@ -246,6 +246,7 @@ test("resource availability keeps selected dates unless the provider confirms a 
 
   assert.equal(availabilityCalls.length, 1);
   assert.equal(availabilityCalls[0].resourceId, 22);
+  assert.deepEqual(availabilityCalls[0].dates, ["2026-08-10", "2026-08-13"]);
   assert.equal(availabilityCalls[0].excludeBookingId, null);
   assert.equal(resetArgs[0], "Datele selectate sunt deja ocupate în noua unitate. Selectați alt interval.");
   assert.equal(resetArgs[1], "unavailable");

@@ -183,7 +183,7 @@ test("provider exposes eligible facility metadata and immutable booking snapshot
   assert.equal(value.bookings[0].facilities[0].name, "Extra bed");
 });
 
-test("provider checks Marina availability with room handoff times", async () => {
+test("provider checks Marina availability with a checkout-exclusive handoff period", async () => {
   const oauth = new OAuthStub(true);
   let requestBody;
   const provider = new MarinaBookingProvider({
@@ -194,7 +194,7 @@ test("provider checks Marina availability with room handoff times", async () => 
   provider.resources = [{ id: 7, providerId: "31" }];
   const result = await provider.availability(7, ["2026-09-03", "2026-09-01", "2026-09-02"]);
   assert.equal(result.available, true);
-  assert.deepEqual(requestBody, { resource_id: 31, periods: [{ start_at: "2026-09-01T15:00:01+03:00", end_at: "2026-09-03T12:00:02+03:00" }], units: 1 });
+  assert.deepEqual(requestBody, { resource_id: 31, periods: [{ start_date: "2026-09-01", end_date: "2026-09-02" }], units: 1 });
 });
 
 test("provider never sends the unsupported Marina availability exclusion field", async () => {

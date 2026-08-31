@@ -33,20 +33,9 @@ function marinaStayPeriod(dates) {
 }
 
 function marinaAvailabilityPeriod(dates) {
-  const values = [...new Set(dates || [])]
-    .map((value) => String(value || "").slice(0, 10))
-    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
-    .sort();
-  if (!values.length) return null;
-  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Bucharest", timeZoneName: "longOffset" });
-  const timestamp = (date, time) => {
-    const zone = formatter.formatToParts(new Date(`${date}T12:00:00Z`)).find((part) => part.type === "timeZoneName")?.value || "GMT+02:00";
-    return `${date}T${time}${zone.replace(/^GMT/, "") || "+00:00"}`;
-  };
-  return {
-    start_at: timestamp(values[0], "15:00:01"),
-    end_at: timestamp(values.at(-1), "12:00:02")
-  };
+  // Availability uses the same checkout-exclusive date contract as quotes
+  // and creates. The checkout date remains available for a same-day handoff.
+  return marinaStayPeriod(dates);
 }
 
 function marinaCheckoutDate(endDate) {

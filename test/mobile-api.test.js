@@ -13,7 +13,7 @@ const extractionRulesSource = fs.readFileSync(path.join(root, "android", "app", 
 
 test("mobile Marina periods preserve stay and handoff boundaries", () => {
   assert.deepEqual(marinaStayPeriod(["2026-07-12 15:00:01", "2026-07-13 00:00:00", "2026-07-14 12:00:02"]), { start_date: "2026-07-12", end_date: "2026-07-13" });
-  assert.deepEqual(marinaAvailabilityPeriod(["2026-07-12 15:00:01", "2026-07-14 12:00:02"]), { start_at: "2026-07-12T15:00:01+03:00", end_at: "2026-07-14T12:00:02+03:00" });
+  assert.deepEqual(marinaAvailabilityPeriod(["2026-07-12 15:00:01", "2026-07-13 00:00:00", "2026-07-14 12:00:02"]), { start_date: "2026-07-12", end_date: "2026-07-13" });
   assert.equal(marinaCheckoutDate("2026-12-31"), "2027-01-01");
 });
 

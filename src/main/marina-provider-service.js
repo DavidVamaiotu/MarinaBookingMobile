@@ -114,14 +114,12 @@ function stayPeriod(dates) {
 function stayAvailabilityPeriod(dates) {
   const values = [...new Set(dates || [])].map(datePart).filter(Boolean).sort();
   if (!values.length) return null;
-  const timestamp = (date, time) => {
-    const timeZoneName = BUCHAREST_OFFSET_FORMATTER.formatToParts(new Date(`${date}T12:00:00Z`)).find((part) => part.type === "timeZoneName")?.value || "GMT+02:00";
-    const offset = timeZoneName.replace(/^GMT/, "") || "+00:00";
-    return `${date}T${time}${offset}`;
-  };
   return {
-    start_at: timestamp(values[0], "15:00:01"),
-    end_at: timestamp(values.at(-1), "12:00:02")
+    // Marina availability uses the same checkout-exclusive date contract as
+    // quotes and creates. The checkout date is only a handoff boundary and
+    // must not be sent as an occupied night.
+    start_date: values[0],
+    end_date: values.length > 1 ? values.at(-2) : values[0]
   };
 }
 
