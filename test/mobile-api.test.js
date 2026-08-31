@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { marinaAvailabilityPeriod, marinaCheckoutDate, marinaStayPeriod } = require("../src/shared/mobile-api");
+const { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingQueryRange, marinaBookingResourceId, marinaCheckoutDate, marinaStayPeriod } = require("../src/shared/mobile-api");
 
 const root = path.join(__dirname, "..");
 const bridgeSource = fs.readFileSync(path.join(root, "mobile", "mobile-bridge.js"), "utf8");
@@ -15,6 +15,31 @@ test("mobile Marina periods preserve stay and handoff boundaries", () => {
   assert.deepEqual(marinaStayPeriod(["2026-07-12 15:00:01", "2026-07-13 00:00:00", "2026-07-14 12:00:02"]), { start_date: "2026-07-12", end_date: "2026-07-13" });
   assert.deepEqual(marinaAvailabilityPeriod(["2026-07-12 15:00:01", "2026-07-14 12:00:02"]), { start_at: "2026-07-12T15:00:01+03:00", end_at: "2026-07-14T12:00:02+03:00" });
   assert.equal(marinaCheckoutDate("2026-12-31"), "2027-01-01");
+});
+
+test("mobile Marina booking queries use Bucharest day boundaries", () => {
+  assert.deepEqual(marinaBookingQueryRange({ start: "2026-08-01", end: "2026-08-31" }), {
+    from: "2026-08-01T00:00:00+03:00",
+    to: "2026-08-31T23:59:59+03:00"
+  });
+  assert.deepEqual(marinaBookingQueryRange({ start: "2026-11-01", end: "2026-11-01" }), {
+    from: "2026-11-01T00:00:00+02:00",
+    to: "2026-11-01T23:59:59+02:00"
+  });
+});
+
+test("mobile Marina normalizes all booking period shapes and keeps the checkout day", () => {
+  const booking = {
+    booking_id: "booking-periods",
+    bookingPeriods: [{ resource: { id: 31 }, startDate: "2026-08-19", endDate: "2026-08-24" }]
+  };
+  assert.equal(marinaBookingResourceId(booking), "31");
+  assert.deepEqual(marinaBookingDates(booking, { bookingMode: "date_range" }), [
+    "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24", "2026-08-25"
+  ]);
+  assert.deepEqual(marinaBookingDates({ id: "booking-segments", segments: [{ resource_id: 31, start_at: "2026-08-19T15:00:01+03:00", end_at: "2026-08-24T12:00:02+03:00" }] }, { bookingMode: "time_slot" }), [
+    "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24"
+  ]);
 });
 
 test("mobile resolves and scopes the Rooms and Camping workspaces", () => {
@@ -29,6 +54,12 @@ test("mobile resolves and scopes the Rooms and Camping workspaces", () => {
 
 test("mobile refreshes build configuration over stale saved settings", () => {
   assert.match(bridgeSource, /MarinaConfig\.mergeWorkspaceSettings\(stored, defaults\)/);
+});
+
+test("mobile refresh sends the full local calendar range to Marina", () => {
+  assert.match(bridgeSource, /marinaBookingQueryRange\(range\)/);
+  assert.match(bridgeSource, /marinaBookingDates\(booking, resource\)/);
+  assert.match(bridgeSource, /marinaBookingResourceId\(booking, periods\)/);
 });
 
 test("mobile normalizes OAuth token scopes before deriving write capabilities", () => {

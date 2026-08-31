@@ -3,7 +3,7 @@ import { App } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
 import { Preferences } from "@capacitor/preferences";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
-import { marinaAvailabilityPeriod, marinaCheckoutDate, marinaStayPeriod } from "../src/shared/mobile-api.js";
+import { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingPeriods, marinaBookingQueryRange, marinaBookingResourceId, marinaStayPeriod } from "../src/shared/mobile-api.js";
 import { customerFromFormData } from "../src/shared/marina-customer.js";
 import { MANUAL_DEPOSIT_FIELD, normalizeMarinaPayment } from "../src/shared/marina-payment.js";
 import { normalizeMarinaQuote } from "../src/shared/marina-quote.js";
@@ -530,23 +530,12 @@ if (!window.marina) {
   }
 
   function normalizeMarinaBookingRecord(booking, resources) {
-    const period = booking.periods?.[0] || booking.booking_periods?.[0] || {};
-    const providerResourceId = String(booking.resource_id ?? booking.resourceId ?? booking.resource?.id ?? period.resource_id ?? period.resourceId ?? "");
+    const periods = marinaBookingPeriods(booking);
+    const providerId = String(booking.id ?? booking.booking_id ?? booking.bookingId ?? "").trim();
+    if (!providerId) throw Object.assign(new Error("API-ul Marina a returnat o rezervare fără identificator."), { code: "marina_invalid_response", permanent: true });
+    const providerResourceId = marinaBookingResourceId(booking, periods);
     const resource = resources.find((item) => item.providerId === providerResourceId);
-    const dateOnlyStart = booking.start_date ?? period.start_date;
-    const dateOnlyEnd = booking.end_date ?? period.end_date;
-    const start = String(dateOnlyStart ?? booking.start_at ?? period.start_at ?? "").slice(0, 10);
-    const rawEnd = String(dateOnlyEnd ?? booking.end_at ?? period.end_at ?? start).slice(0, 10);
-    const dateRangeBooking = resource?.bookingMode !== "time_slot";
-    const hasNestedTimedEnd = Boolean(period.end_at ?? period.endAt ?? period.ends_at ?? period.endsAt);
-    const end = dateOnlyEnd || (dateRangeBooking && !hasNestedTimedEnd) ? marinaCheckoutDate(rawEnd) : rawEnd;
-    const dates = [];
-    for (let cursor = start; /^\d{4}-\d{2}-\d{2}$/.test(cursor) && cursor <= end && dates.length < 366;) {
-      dates.push(cursor);
-      const next = new Date(`${cursor}T00:00:00Z`);
-      next.setUTCDate(next.getUTCDate() + 1);
-      cursor = next.toISOString().slice(0, 10);
-    }
+    const dates = marinaBookingDates(booking, resource);
     const customer = booking.customer || booking.guest || {};
     const guests = booking.guests || {};
     const status = String(booking.status || "pending").toLowerCase();
@@ -554,13 +543,13 @@ if (!window.marina) {
     const explicitTrash = trashValue === true || trashValue === 1 || ["1", "true", "trash", "trashed"].includes(String(trashValue || "").trim().toLowerCase());
     const facilities = marinaFacilitySnapshots(booking);
     return {
-      localId: `marina:${booking.id}`,
-      serverId: String(booking.id),
+      localId: `marina:${providerId}`,
+      serverId: providerId,
       provider: "marina",
-      providerId: String(booking.id),
+      providerId,
       providerResourceId,
       resourceId: marinaUiId(providerResourceId),
-      status: ["approved", "confirmed", "active"].includes(status) ? "approved" : "pending",
+      status: ["approved", "confirmed", "active", "completed"].includes(status) ? "approved" : "pending",
       providerStatus: status,
       trashed: explicitTrash || ["cancelled", "canceled", "deleted"].includes(status),
       note: marinaNoteText(booking),
@@ -570,7 +559,8 @@ if (!window.marina) {
       formData: marinaFormData(booking, customer, guests),
       dates,
       syncState: "synced",
-      version: booking.version ?? null
+      version: booking.version ?? booking.etag ?? null,
+      serverUpdatedAt: booking.updated_at ?? booking.updatedAt ?? null
     };
   }
 
@@ -626,7 +616,7 @@ if (!window.marina) {
       const bookings = [];
       let after = "";
       if (MarinaConfig.capabilities(marinaEffectiveScopes).bookingsRead) do {
-        const params = new URLSearchParams({ from: range.start, to: range.end, limit: "200" });
+        const params = new URLSearchParams({ ...marinaBookingQueryRange(range), limit: "200" });
         if (after) params.set("after", after);
         const payload = await marinaRequest(`/v1/bookings?${params}`, { source });
         const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.bookings) ? payload.bookings : Array.isArray(payload) ? payload : [];
