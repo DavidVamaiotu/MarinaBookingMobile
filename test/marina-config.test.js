@@ -86,3 +86,19 @@ test("Marina public configuration persists across normal launches and runtime va
   assert.equal(MarinaConfig.hasExplicitConfig({}), false);
   assert.equal(MarinaConfig.hasExplicitConfig({ MARINA_INTEGRATION_ENABLED: "true" }), true);
 });
+
+test("mobile build settings override stale persisted configuration without losing connection state", () => {
+  const merged = MarinaConfig.mergeWorkspaceSettings({
+    rooms: { configured: false, apiBaseUrl: "https://old.example", connected: true, customPreference: "keep" },
+    camping: { configured: false }
+  }, {
+    rooms: { configured: true, apiBaseUrl: "https://booking.husi.ro", oauthClientConfigured: true },
+    camping: { configured: true, apiBaseUrl: "https://booking.husi.ro", oauthClientConfigured: true }
+  });
+
+  assert.equal(merged.rooms.configured, true);
+  assert.equal(merged.rooms.apiBaseUrl, "https://booking.husi.ro");
+  assert.equal(merged.rooms.connected, true);
+  assert.equal(merged.rooms.customPreference, "keep");
+  assert.equal(merged.camping.configured, true);
+});

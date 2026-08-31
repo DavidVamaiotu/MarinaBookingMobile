@@ -116,6 +116,18 @@
     });
   }
 
+  function mergeWorkspaceSettings(persisted = {}, defaults = {}) {
+    const saved = persisted && typeof persisted === "object" ? persisted : {};
+    const build = defaults && typeof defaults === "object" ? defaults : {};
+    return Object.fromEntries(Object.entries(build).map(([source, settings]) => [
+      source,
+      {
+        ...(saved[source] && typeof saved[source] === "object" ? saved[source] : {}),
+        ...(settings && typeof settings === "object" ? settings : {})
+      }
+    ]));
+  }
+
   function providerIdentity(provider, id) {
     const normalizedProvider = SUPPORTED_PROVIDERS.includes(String(provider)) ? String(provider) : "existing";
     const normalizedId = String(id ?? "").trim();
@@ -162,6 +174,7 @@
     createConfig,
     hasExplicitConfig,
     publicEnvironment,
+    mergeWorkspaceSettings,
     providerIdentity,
     providerKey,
     capabilities

@@ -27,6 +27,10 @@ test("mobile resolves and scopes the Rooms and Camping workspaces", () => {
   assert.doesNotMatch(bridgeSource, /workspace_id\s*:/);
 });
 
+test("mobile refreshes build configuration over stale saved settings", () => {
+  assert.match(bridgeSource, /MarinaConfig\.mergeWorkspaceSettings\(stored, defaults\)/);
+});
+
 test("mobile normalizes OAuth token scopes before deriving write capabilities", () => {
   assert.match(bridgeSource, /MarinaConfig\.normalizeScopes\(payload\.scope\)/);
 });

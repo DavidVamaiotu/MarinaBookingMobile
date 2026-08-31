@@ -167,7 +167,11 @@ if (!window.marina) {
     });
   }
 
-  async function allSettings() { return readJson(SETTINGS_KEY, defaultSettings); }
+  async function allSettings() {
+    const defaults = defaultSettings();
+    const stored = await readJson(SETTINGS_KEY, () => defaults);
+    return MarinaConfig.mergeWorkspaceSettings(stored, defaults);
+  }
   async function allCache() { return readJson(CACHE_KEY, defaultCache); }
 
   const marinaOverridesHydration = new Map();
