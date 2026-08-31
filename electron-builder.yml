@@ -25,6 +25,7 @@ files:
   - index.html
   - styles.css
   - package.json
+  - marina-build-config.json
   - src/**/*
   - assets/**/*
   - fonts/**/*

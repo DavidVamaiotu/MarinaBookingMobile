@@ -12,6 +12,13 @@ jobs:
   release:
     if: github.repository == 'DavidVamaiotu/MarinaBookingMobile'
     runs-on: ubuntu-latest
+    env:
+      MARINA_INTEGRATION_ENABLED: "true"
+      MARINA_API_BASE_URL: https://booking.husi.ro
+      MARINA_OAUTH_CLIENT_ID: ${{ vars.MARINA_OAUTH_CLIENT_ID || secrets.MARINA_OAUTH_CLIENT_ID }}
+      MARINA_OAUTH_SCOPES: resources:read resources:write bookings:read bookings:write
+      MARINA_ROOMS_WORKSPACE_ID: ${{ vars.MARINA_ROOMS_WORKSPACE_ID }}
+      MARINA_CAMPING_WORKSPACE_ID: ${{ vars.MARINA_CAMPING_WORKSPACE_ID }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -26,6 +33,7 @@ jobs:
       - run: node scripts/verify-release-version.js
       - run: npm run check
       - run: npm test
+      - run: node scripts/verify-public-config.js
       - name: Restore Android signing key
         shell: bash
         env:

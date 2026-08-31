@@ -1,4 +1,5 @@
 node_modules/
+marina-build-config.json
 dist-electron/
 dist-mobile-web/
 coverage/

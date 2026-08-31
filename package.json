@@ -10,8 +10,8 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "check": "node scripts/check-syntax.js",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder --win nsis --x64 --publish never",
+    "pack": "node scripts/build-desktop.js --dir",
+    "dist": "node scripts/build-desktop.js --win nsis --x64 --publish never",
     "mobile:web": "node scripts/build-mobile-web.js",
     "mobile:sync": "npm run mobile:web && cap sync android",
     "mobile:apk": "node scripts/build-android.js"

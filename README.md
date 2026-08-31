@@ -23,6 +23,12 @@ MARINA_ROOMS_WORKSPACE_ID=
 MARINA_CAMPING_WORKSPACE_ID=
 ```
 
+Buildul desktop și bundle-ul Android includ automat valorile publice Marina. Workflow-urile de release
+preiau `MARINA_OAUTH_CLIENT_ID` din variabila de repository (sau din secretul cu același nume) și
+opresc release-ul dacă acest client OAuth nu este configurat. Clientul trebuie să aibă înregistrate
+în Marina callback-urile desktop `ro.marinapark.booking.desktop://oauth/callback` și mobile
+`ro.marinapark.booking.mobile://oauth/callback`.
+
 ID-urile workspace-urilor sunt opționale. Dacă lipsesc, aplicația apelează `GET /v1/workspaces` și
 rezolvă ID-urile după slug. Pentru Camere acceptă și workspace-ul implicit ca fallback de
 compatibilitate; Camping necesită slug `camping`.

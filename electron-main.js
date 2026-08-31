@@ -3,7 +3,7 @@
 const { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { execFileSync } = require("node:child_process");
-const { mkdirSync, renameSync, writeFileSync } = require("node:fs");
+const { mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
 const { MarinaStore } = require("./src/main/marina-store");
 const MarinaConfig = require("./src/shared/marina-config");
@@ -119,6 +119,15 @@ function sendState(source, state) {
   if (window && !window.isDestroyed()) window.webContents.send("state:changed", { source, state });
 }
 
+function bundledMarinaEnvironment() {
+  try {
+    const value = JSON.parse(readFileSync(path.join(__dirname, "marina-build-config.json"), "utf8"));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
 function sagaInvoiceStore() {
   const database = contexts.rooms?.database || contexts.camping?.database;
   if (!database) throw new Error("Stocarea setărilor de facturare nu este disponibilă.");
@@ -205,8 +214,9 @@ function createMarinaWorkspaceContexts() {
   try {
     persistedConfig = JSON.parse(database.getMeta("marinaPublicConfig") || "{}");
   } catch {}
-  const marinaConfig = MarinaConfig.createConfig(process.env, persistedConfig);
-  if (MarinaConfig.hasExplicitConfig(process.env)) {
+  const environment = { ...bundledMarinaEnvironment(), ...process.env };
+  const marinaConfig = MarinaConfig.createConfig(environment, persistedConfig);
+  if (MarinaConfig.hasExplicitConfig(environment)) {
     database.setMeta("marinaPublicConfig", JSON.stringify(MarinaConfig.publicEnvironment(marinaConfig)));
   }
   const tokenStore = new MarinaTokenStore({ database, safeStorage });
