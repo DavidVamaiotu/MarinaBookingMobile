@@ -136,3 +136,12 @@ test("availability rerenders and refreshes preserve the horizontal anchor", () =
   assert.match(app, /renderAvailabilityTimeline\(\{ desiredLeft: nextLeft \}\)/);
   assert.match(app, /function applyState\(next\)[\s\S]*renderAvailabilityTimeline\(\)/);
 });
+
+test("renderer initializes availability window dates and formatters without TDZ reference errors", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const cacheIndex = app.indexOf("const dateTimeFormatterCache");
+  const windowStartIndex = app.indexOf("let availabilityWindowStart = todayIso()");
+  assert.ok(cacheIndex !== -1, "dateTimeFormatterCache must exist");
+  assert.ok(windowStartIndex !== -1, "availabilityWindowStart must exist");
+  assert.ok(cacheIndex < windowStartIndex, "dateTimeFormatterCache must be declared before availabilityWindowStart to avoid TDZ");
+});

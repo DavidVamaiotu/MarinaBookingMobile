@@ -45,6 +45,22 @@ const ROW_GAP = 1;
 const VIRTUAL_THRESHOLD = 60;
 const OVERSCAN = 10;
 const DEFAULT_TIMEZONE = "Europe/Bucharest";
+const dateTimeFormatterCache = new Map();
+const numberFormatterCache = new Map();
+
+function cachedFormatter(cache, Formatter, locale, options = {}) {
+  const key = JSON.stringify([locale, options]);
+  if (!cache.has(key)) cache.set(key, new Formatter(locale, options));
+  return cache.get(key);
+}
+
+function cachedDateTimeFormatter(locale, options = {}) {
+  return cachedFormatter(dateTimeFormatterCache, Intl.DateTimeFormat, locale, options);
+}
+
+function cachedNumberFormatter(locale, options = {}) {
+  return cachedFormatter(numberFormatterCache, Intl.NumberFormat, locale, options);
+}
 
 let state = { resources: [], facilities: [], bookings: [], commands: [], diagnostics: {}, settings: {}, range: null };
 let activeWorkspace = "rooms";
@@ -264,22 +280,6 @@ async function switchWorkspace(source) {
   } catch (error) {
     if (switchId === workspaceSwitchId && activeWorkspace === source) showError(error);
   }
-}
-const dateTimeFormatterCache = new Map();
-const numberFormatterCache = new Map();
-
-function cachedFormatter(cache, Formatter, locale, options = {}) {
-  const key = JSON.stringify([locale, options]);
-  if (!cache.has(key)) cache.set(key, new Formatter(locale, options));
-  return cache.get(key);
-}
-
-function cachedDateTimeFormatter(locale, options = {}) {
-  return cachedFormatter(dateTimeFormatterCache, Intl.DateTimeFormat, locale, options);
-}
-
-function cachedNumberFormatter(locale, options = {}) {
-  return cachedFormatter(numberFormatterCache, Intl.NumberFormat, locale, options);
 }
 
 function configuredTimeZone() {
