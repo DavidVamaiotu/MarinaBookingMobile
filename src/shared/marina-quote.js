@@ -1,5 +1,7 @@
 "use strict";
 
+const MONEY_FORMATTER = new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
 function quoteEntity(payload) {
   if (payload?.data && typeof payload.data === "object" && !Array.isArray(payload.data)) return payload.data;
   if (payload?.quote && typeof payload.quote === "object") return payload.quote;
@@ -18,7 +20,7 @@ function moneyMajor(minor) {
 }
 
 function formatMoney(minor) {
-  return `${new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(moneyMajor(minor))} lei`;
+  return `${MONEY_FORMATTER.format(moneyMajor(minor))} lei`;
 }
 
 function normalizeMarinaQuote(payload, { mode = "full" } = {}) {

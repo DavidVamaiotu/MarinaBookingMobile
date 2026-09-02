@@ -12,6 +12,7 @@ const electronSource = fs.readFileSync(path.join(__dirname, "..", "electron-main
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 const mobileBuildSource = fs.readFileSync(path.join(__dirname, "..", "scripts", "build-mobile-web.js"), "utf8");
 const preloadSource = fs.readFileSync(path.join(__dirname, "..", "preload.js"), "utf8");
+const mobileBridgeSource = fs.readFileSync(path.join(__dirname, "..", "mobile", "mobile-bridge.js"), "utf8");
 
 function bookingFixture(overrides = {}) {
   return {
@@ -105,12 +106,14 @@ test("invoice generation is wired into the payment dropdown and mobile bundle", 
   assert.match(indexSource, /src="src\/shared\/saga-invoice\.js"/);
   assert.match(appSource, /runExclusive\(`saga-invoice:\$\{activeWorkspace\}:\$\{booking\.localId\}`/);
   assert.match(appSource, /window\.SagaInvoice\.buildSagaInvoice/);
+  assert.match(appSource, /window\.marina\.importSagaInvoice/);
   assert.match(appSource, /window\.marina\.getBooking\(bookingKey\)/);
   assert.match(appSource, /window\.marina\.getPayment\(bookingKey, \{ source \}\)/);
   assert.match(mobileBuildSource, /"saga-invoice\.js"/);
 });
 
 test("SAGA supplier settings are part of the existing Settings flow", () => {
+  const settingsSagaSection = indexSource.match(/<section class="saga-invoice-fields" aria-labelledby="settingsSagaTitle">([\s\S]*?)<\/section>/)?.[1] || "";
   const settings = validate.sagaInvoiceSettings({ name: "Marina Park", cif: "RO123", vatRate: "11" });
   assert.equal(settings.name, "Marina Park");
   assert.equal(settings.cif, "RO123");
@@ -124,6 +127,16 @@ test("SAGA supplier settings are part of the existing Settings flow", () => {
   assert.match(appSource, /saveSagaInvoiceSettings/);
   assert.match(preloadSource, /getSagaInvoiceSettings/);
   assert.match(preloadSource, /saveSagaInvoiceSettings/);
+  assert.match(preloadSource, /importSagaInvoice/);
   assert.match(electronSource, /saga-invoice-settings:get/);
   assert.match(electronSource, /saga-invoice-settings:save/);
+  assert.match(electronSource, /saga-invoice:import/);
+  assert.match(indexSource, /name="sagaWebApiToken"[^>]*type="password"/);
+  assert.match(settingsSagaSection, /name="supplierName"/);
+  assert.match(settingsSagaSection, /name="supplierCif"/);
+  assert.match(settingsSagaSection, /name="vatRate"/);
+  assert.doesNotMatch(settingsSagaSection, /name="supplier(?:RegCom|Address|City|County|Phone|Email|Iban)"/);
+  assert.match(indexSource, /id="sagaInvoiceSubmit"[^>]*>Creează și importă/);
+  assert.match(mobileBridgeSource, /SAGA_WEB_TOKEN_KEY/);
+  assert.match(mobileBridgeSource, /async importSagaInvoice\(input\)/);
 });

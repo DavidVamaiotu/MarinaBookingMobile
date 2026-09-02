@@ -61,6 +61,13 @@ const BUCHAREST_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   month: "2-digit",
   day: "2-digit"
 });
+const BUCHAREST_TIME_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/Bucharest",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23"
+});
 
 function datePart(value) {
   const source = String(value || "");
@@ -79,13 +86,7 @@ function timedEndDatePart(value) {
   const date = datePart(value);
   const parsed = new Date(String(value || ""));
   if (!String(value || "").includes("T") || !Number.isFinite(parsed.getTime())) return date;
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Bucharest",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(parsed).map((part) => [part.type, part.value]));
+  const parts = Object.fromEntries(BUCHAREST_TIME_FORMATTER.formatToParts(parsed).map((part) => [part.type, part.value]));
   return parts.hour === "00" && parts.minute === "00" && parts.second === "00" ? addDays(date, -1) : date;
 }
 function addDays(value, count) {
@@ -545,7 +546,6 @@ class MarinaBookingProvider extends EventEmitter {
           do {
           const response = await this.api.bookings({ from, to, after, limit: 200 });
             loaded.push(...collection(response.payload, ["bookings"]));
-            this.persistCache(this.normalizeBookings(loaded));
             after = response.payload?.next_cursor ?? response.payload?.pagination?.next_cursor ?? response.payload?.meta?.next_cursor ?? null;
           } while (after);
         }

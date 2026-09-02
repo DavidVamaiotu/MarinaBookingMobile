@@ -162,4 +162,17 @@ function sagaInvoiceSettings(value) {
   return result;
 }
 
-module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, facilityIds, formData, id, marinaPaymentRequest, object, quoteInput, range, sagaInvoiceSettings, text };
+function sagaInvoiceImport(value) {
+  value = object(value, "sagaInvoiceImport");
+  const xml = text(value.xml, "XML-ul facturii", 2_000_000, true);
+  if (!/^<\?xml[\s\S]*<Facturi>[\s\S]*<Factura>[\s\S]*<\/Factura>[\s\S]*<\/Facturi>\s*$/i.test(xml)) throw new TypeError("XML-ul facturii SAGA este invalid.");
+  const filename = text(value.filename, "Numele fișierului", 240, true);
+  if (!/^F_[^/\\]+\.xml$/i.test(filename)) throw new TypeError("Numele fișierului SAGA este invalid.");
+  return {
+    xml,
+    filename,
+    codFiscal: text(value.codFiscal, "Codul fiscal SAGA", 100, true)
+  };
+}
+
+module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, facilityIds, formData, id, marinaPaymentRequest, object, quoteInput, range, sagaInvoiceImport, sagaInvoiceSettings, text };

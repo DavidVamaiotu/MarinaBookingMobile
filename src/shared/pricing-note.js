@@ -9,6 +9,7 @@
   const PRICING_LINE = new RegExp(`Cost total:\\s*(${AMOUNT})\\s*RON,\\s*Depozit:\\s*(${AMOUNT})\\s*RON,\\s*Rest:\\s*(${AMOUNT})\\s*RON(?![\\d.,])`, "i");
   const LEGACY_PRICING_LINE = new RegExp(`Avans:\\s*(${AMOUNT}),\\s*Cost:\\s*(${AMOUNT}),\\s*Rest:\\s*(${AMOUNT})(?![\\d.,])`, "i");
   const ANY_PRICING_LINE = new RegExp(`(?:${PRICING_LINE.source})|(?:${LEGACY_PRICING_LINE.source})`, "gi");
+  const AMOUNT_FORMATTER = new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
   function parseAmount(value) {
     const normalized = String(value ?? "").trim().replace(/\s+/g, "").replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
@@ -18,7 +19,7 @@
   }
 
   function formatAmount(value) {
-    return new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value) || 0);
+    return AMOUNT_FORMATTER.format(Number(value) || 0);
   }
 
   function format({ total, deposit, balance }) {

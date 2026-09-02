@@ -8,8 +8,10 @@ const path = require("node:path");
 const { MarinaStore } = require("./src/main/marina-store");
 const MarinaConfig = require("./src/shared/marina-config");
 const SagaInvoice = require("./src/shared/saga-invoice");
+const SagaWebApi = require("./src/shared/saga-web-api");
 const { MarinaOAuthController } = require("./src/main/marina-oauth-controller");
 const { MarinaTokenStore } = require("./src/main/marina-token-store");
+const { SagaWebTokenStore } = require("./src/main/saga-web-token-store");
 const { MarinaV1ApiClient } = require("./src/main/marina-v1-client");
 const { MarinaBookingProvider } = require("./src/main/marina-provider-service");
 const validate = require("./src/main/validation");
@@ -134,19 +136,42 @@ function sagaInvoiceStore() {
   return database;
 }
 
-function getSagaInvoiceSettings() {
-  try {
-    const stored = JSON.parse(sagaInvoiceStore().getMeta(SAGA_INVOICE_SETTINGS_KEY) || "null");
-    return validate.sagaInvoiceSettings(stored || SagaInvoice.defaultSupplierSettings());
-  } catch {
-    return validate.sagaInvoiceSettings(SagaInvoice.defaultSupplierSettings());
-  }
+function sagaWebTokenStore() {
+  return new SagaWebTokenStore({ database: sagaInvoiceStore(), safeStorage });
 }
 
-function saveSagaInvoiceSettings(input) {
+function getSagaInvoiceSettings() {
+  let settings;
+  try {
+    const stored = JSON.parse(sagaInvoiceStore().getMeta(SAGA_INVOICE_SETTINGS_KEY) || "null");
+    settings = validate.sagaInvoiceSettings(stored || SagaInvoice.defaultSupplierSettings());
+  } catch {
+    settings = validate.sagaInvoiceSettings(SagaInvoice.defaultSupplierSettings());
+  }
+  return { ...settings, sagaWebConfigured: sagaWebTokenStore().hasTokenSync() };
+}
+
+async function saveSagaInvoiceSettings(input) {
   const settings = validate.sagaInvoiceSettings(input);
+  const token = validate.text(input?.sagaWebApiToken, "Cheia API SAGA Web", 20_000);
+  if (token) await sagaWebTokenStore().setToken(token);
   sagaInvoiceStore().setMeta(SAGA_INVOICE_SETTINGS_KEY, JSON.stringify(settings));
-  return settings;
+  return { ...settings, sagaWebConfigured: sagaWebTokenStore().hasTokenSync() };
+}
+
+async function importSagaInvoice(input) {
+  input = validate.sagaInvoiceImport(input);
+  const store = sagaWebTokenStore();
+  const token = await store.getToken();
+  if (!token) throw Object.assign(new Error("Configurează cheia API SAGA Web în Setări înainte de import."), { code: "saga_web_not_configured", permanent: true });
+  try {
+    const result = await SagaWebApi.importSagaInvoice({ ...input, token });
+    if (result.refreshToken) await store.setToken(result.refreshToken);
+    return { success: result.success, message: result.message };
+  } catch (error) {
+    if (error?.refreshToken) await store.setToken(error.refreshToken);
+    throw error;
+  }
 }
 
 function registerIpc() {
@@ -197,6 +222,7 @@ function registerIpc() {
   ipcMain.handle("settings:get", (_event, source) => contextFor(source).service.settings());
   ipcMain.handle("saga-invoice-settings:get", () => getSagaInvoiceSettings());
   ipcMain.handle("saga-invoice-settings:save", (_event, input) => saveSagaInvoiceSettings(input));
+  ipcMain.handle("saga-invoice:import", (_event, input) => importSagaInvoice(input));
   ipcMain.handle("settings:clear", () => disconnectMarina());
   ipcMain.handle("marina:connect", () => contexts.rooms.service.connect());
   ipcMain.handle("marina:disconnect", () => disconnectMarina());

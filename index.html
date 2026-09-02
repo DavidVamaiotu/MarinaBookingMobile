@@ -212,20 +212,14 @@
       </section>
       <section class="saga-invoice-fields" aria-labelledby="settingsSagaTitle">
         <h3 id="settingsSagaTitle">Facturare SAGA</h3>
-        <p class="saga-invoice-inline-note">Completează aici datele firmei care emite factura. Acestea vor fi precompletate la „Plată → Generează factura”. CUI-ul este obligatoriu doar la generarea XML.</p>
+        <p class="saga-invoice-inline-note">Completează datele necesare pentru import și cheia API generată în SAGA Web la „Administrare → Utilizatori → Integrare API”. Cheia este păstrată în stocarea securizată a dispozitivului.</p>
         <div class="field-grid">
           <label class="span-2">Denumire furnizor<input name="supplierName" autocomplete="organization"></label>
           <label>Cod fiscal furnizor<input name="supplierCif" autocomplete="off"></label>
-          <label>Nr. Registrul Comerțului<input name="supplierRegCom" autocomplete="off"></label>
-          <label class="span-2">Adresă furnizor<input name="supplierAddress" autocomplete="street-address"></label>
-          <label>Localitate<input name="supplierCity" autocomplete="address-level2"></label>
-          <label>Județ<input name="supplierCounty" autocomplete="address-level1"></label>
-          <label>Telefon<input name="supplierPhone" type="tel" autocomplete="tel"></label>
-          <label>Email<input name="supplierEmail" type="email" autocomplete="email"></label>
-          <label class="span-2">IBAN<input name="supplierIban" autocomplete="off"></label>
           <label>Cota TVA implicită<select name="vatRate"><option value="11">11% — cazare</option><option value="21">21% — standard</option><option value="0">0% — fără TVA</option></select></label>
+          <label class="span-2">Cheie API SAGA Web<input name="sagaWebApiToken" type="password" autocomplete="new-password"></label>
         </div>
-        <p class="availability">Verifică în SAGA cota TVA aplicabilă înainte de import; valoarea implicită este 11% pentru cazare.</p>
+        <p class="availability">CUI-ul trebuie să corespundă firmei din SAGA Web. Verifică și cota TVA înainte de import; valoarea implicită este 11% pentru cazare.</p>
       </section>
       <p class="saga-invoice-status" id="settingsStatus" role="status" aria-live="polite"></p>
       <footer><button class="secondary" id="cancelSettingsDialog" type="button">Anulează</button><button class="primary" id="settingsSubmit" type="submit">Salvează setările</button></footer>
@@ -234,14 +228,14 @@
 
   <dialog id="sagaInvoiceDialog" aria-labelledby="sagaInvoiceDialogTitle">
     <form id="sagaInvoiceForm" class="panel-form saga-invoice-form" novalidate>
-      <header><div><p>Export SAGA</p><h2 id="sagaInvoiceDialogTitle">Generează factura</h2></div><button class="icon" id="closeSagaInvoiceDialog" type="button" aria-label="Închide">×</button></header>
+      <header><div><p>Import SAGA Web</p><h2 id="sagaInvoiceDialogTitle">Generează factura</h2></div><button class="icon" id="closeSagaInvoiceDialog" type="button" aria-label="Închide">×</button></header>
       <section class="saga-invoice-preview" aria-labelledby="sagaInvoiceClientTitle">
         <h3 id="sagaInvoiceClientTitle">Client și rezervare</h3>
         <p id="sagaInvoiceClientName">Se verifică…</p>
         <p id="sagaInvoiceClientAddress">Se verifică adresa din API-ul Marina…</p>
         <p id="sagaInvoiceClientTotal">Cost total: —</p>
       </section>
-      <p class="availability">Adresa clientului este citită din rezervarea Marina revalidată. Datele furnizorului sunt preluate din Setări și pot fi ajustate doar pentru această factură. Fișierul XML se descarcă local și nu modifică rezervarea.</p>
+      <p class="availability">Adresa clientului este citită din rezervarea Marina revalidată. Factura va fi creată și încărcată în SAGA Web, apoi trebuie confirmată în „Diverse → Import date”. Rezervarea Marina nu este modificată.</p>
       <section class="saga-invoice-fields" aria-labelledby="sagaInvoiceSupplierTitle">
         <h3 id="sagaInvoiceSupplierTitle">Date furnizor</h3>
         <p class="saga-invoice-inline-note">Valorile sunt precompletate din Setări. Modificările făcute aici se aplică doar acestui fișier.</p>
@@ -267,7 +261,7 @@
         <p class="availability">Verifică în SAGA cota TVA aplicabilă înainte de import; valoarea implicită este 11% pentru cazare.</p>
       </section>
       <p class="saga-invoice-status" id="sagaInvoiceStatus" role="status" aria-live="polite"></p>
-      <footer><button class="secondary" id="cancelSagaInvoiceDialog" type="button">Anulează</button><button class="primary" id="sagaInvoiceSubmit" type="submit">Generează factura</button></footer>
+      <footer><button class="secondary" id="cancelSagaInvoiceDialog" type="button">Anulează</button><button class="primary" id="sagaInvoiceSubmit" type="submit">Creează și importă</button></footer>
     </form>
   </dialog>
 

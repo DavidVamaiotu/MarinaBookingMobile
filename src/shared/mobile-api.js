@@ -56,6 +56,13 @@ const marinaBucharestOffsetFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "Europe/Bucharest",
   timeZoneName: "longOffset"
 });
+const marinaBucharestTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/Bucharest",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23"
+});
 
 function marinaDatePart(value) {
   const source = String(value || "");
@@ -87,13 +94,7 @@ function marinaTimedEndDatePart(value) {
   const date = marinaDatePart(value);
   const parsed = new Date(String(value || ""));
   if (!String(value || "").includes("T") || !Number.isFinite(parsed.getTime())) return date;
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Bucharest",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(parsed).map((part) => [part.type, part.value]));
+  const parts = Object.fromEntries(marinaBucharestTimeFormatter.formatToParts(parsed).map((part) => [part.type, part.value]));
   return parts.hour === "00" && parts.minute === "00" && parts.second === "00" ? marinaAddDays(date, -1) : date;
 }
 

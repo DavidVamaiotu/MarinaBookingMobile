@@ -12,6 +12,7 @@ import * as BookingFields from "../src/shared/booking-fields.js";
 import * as PricingNote from "../src/shared/pricing-note.js";
 import * as MarinaConfig from "../src/shared/marina-config.js";
 import * as MarinaOAuth from "../src/shared/marina-oauth.js";
+import * as SagaWebApi from "../src/shared/saga-web-api.js";
 import { orderMarinaResources } from "../src/shared/marina-resource-order.js";
 import { parseReservationDeepLink } from "../src/shared/reservation-deep-link.js";
 
@@ -31,6 +32,7 @@ if (!window.marina) {
   const SETTINGS_KEY = "marina-mobile-settings-v1";
   const CACHE_KEY = "marina-mobile-cache-v1";
   const SAGA_INVOICE_SETTINGS_KEY = "marina-saga-invoice-settings-v1";
+  const SAGA_WEB_TOKEN_KEY = "saga-web-api-token";
   const MARINA_REFRESH_TOKEN_KEY = "marina-oauth-refresh-token";
   const callbacks = new Set();
   const reservationLinkCallbacks = new Set();
@@ -137,7 +139,8 @@ if (!window.marina) {
       email: pick("email", "mail", "supplierEmail"),
       iban: pick("iban", "supplierIban"),
       country: pick("country", "tara") || "RO",
-      vatRate: pick("vatRate", "vat_rate") || "11"
+      vatRate: pick("vatRate", "vat_rate") || "11",
+      sagaWebConfigured: input.sagaWebConfigured === true
     };
   }
   const marinaWorkspaceCache = (source) => ({ workspaceId: marinaBuildConfig.workspaceIds[source], workspaceSlug: source, resources: [], facilities: [], bookings: [], updatedAt: null, noteOverrides: {}, manualDepositOverrides: {} });
@@ -207,6 +210,7 @@ if (!window.marina) {
   let marinaPending = null;
   let marinaAccessToken = "";
   let marinaAccessExpiresAt = 0;
+  let marinaRefreshTokenKnown = null;
   let marinaEffectiveScopes = [...marinaBuildConfig.scopes];
   let marinaRefreshPromise = null;
   const marinaWorkspaceIds = new Map();
@@ -217,6 +221,12 @@ if (!window.marina) {
   function mobilePayload(response) {
     if (response?.data && typeof response.data === "object") return response.data;
     try { return JSON.parse(String(response?.data || "{}")); } catch { return {}; }
+  }
+
+  async function hasMarinaRefreshToken() {
+    if (marinaRefreshTokenKnown !== null) return marinaRefreshTokenKnown;
+    marinaRefreshTokenKnown = Boolean(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY));
+    return marinaRefreshTokenKnown;
   }
 
   function marinaProblemMessage(payload, status) {
@@ -270,7 +280,10 @@ if (!window.marina) {
     marinaAccessToken = String(payload.access_token);
     marinaAccessExpiresAt = Date.now() + Math.max(0, Number(payload.expires_in) || 0) * 1000;
     if (payload.scope) marinaEffectiveScopes = MarinaConfig.normalizeScopes(payload.scope);
-    if (payload.refresh_token) await SecureStorage.set(MARINA_REFRESH_TOKEN_KEY, String(payload.refresh_token));
+    if (payload.refresh_token) {
+      await SecureStorage.set(MARINA_REFRESH_TOKEN_KEY, String(payload.refresh_token));
+      marinaRefreshTokenKnown = true;
+    }
     return marinaAccessToken;
   }
 
@@ -278,9 +291,10 @@ if (!window.marina) {
     if (marinaRefreshPromise) return marinaRefreshPromise;
     marinaRefreshPromise = (async () => {
       const refreshToken = String(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY) || "");
+      marinaRefreshTokenKnown = Boolean(refreshToken);
       if (!refreshToken) throw Object.assign(new Error("Conectarea Marina este necesară."), { code: "marina_reconnect_required", auth: true, permanent: true });
       try { return await marinaTokenRequest({ grant_type: "refresh_token", client_id: marinaBuildConfig.clientId, refresh_token: refreshToken }); }
-      catch (error) { marinaAccessToken = ""; marinaAccessExpiresAt = 0; await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY); throw error; }
+      catch (error) { marinaAccessToken = ""; marinaAccessExpiresAt = 0; await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY); marinaRefreshTokenKnown = false; throw error; }
     })();
     try { return await marinaRefreshPromise; } finally { marinaRefreshPromise = null; }
   }
@@ -368,6 +382,7 @@ if (!window.marina) {
       marinaAccessExpiresAt = 0;
       marinaPending = null;
       await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY);
+      marinaRefreshTokenKnown = false;
       marinaNoteOverrides.clear();
       marinaManualDepositOverrides.clear();
       marinaOverridesHydration.clear();
@@ -430,7 +445,7 @@ if (!window.marina) {
   async function configuredState(online = false, authPaused = false, source = currentSource) {
     const [settings, cache] = await Promise.all([allSettings(), allCache()]);
     const result = stateFrom(cache, settings, online, authPaused, source);
-    const connected = Boolean(marinaAccessToken || await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY));
+    const connected = Boolean(marinaAccessToken || await hasMarinaRefreshToken());
     const capabilities = MarinaConfig.capabilities(marinaEffectiveScopes);
     result.settings = {
       ...result.settings,
@@ -601,7 +616,7 @@ if (!window.marina) {
     currentRange = range;
     const source = currentSource;
     await ensureMarinaOverrides(source);
-    const connected = Boolean(marinaAccessToken || await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY));
+    const connected = Boolean(marinaAccessToken || await hasMarinaRefreshToken());
     if (!connected) return configuredState(false, true, source);
     try {
       if (!MarinaConfig.capabilities(marinaEffectiveScopes).resourcesRead) return configuredState(true, false, source);
@@ -613,26 +628,28 @@ if (!window.marina) {
       const facilities = facilityRows.map(normalizeMarinaFacility);
       const bookings = [];
       let after = "";
-      if (MarinaConfig.capabilities(marinaEffectiveScopes).bookingsRead) do {
-        const params = new URLSearchParams({ ...marinaBookingQueryRange(range), limit: "200" });
-        if (after) params.set("after", after);
-        const payload = await marinaRequest(`/v1/bookings?${params}`, { source });
-        const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.bookings) ? payload.bookings : Array.isArray(payload) ? payload : [];
+      if (MarinaConfig.capabilities(marinaEffectiveScopes).bookingsRead) {
         const previousBookings = new Map((((await allCache())[source]?.bookings) || []).map((booking) => [booking.providerId, booking]));
-        for (const booking of rows) {
-          const normalized = normalizeMarinaBookingRecord(booking, resources);
-          const previous = previousBookings.get(normalized.providerId);
-          const overrideKey = marinaOverrideKey(source, normalized.providerId);
-          if (marinaNoteOverrides.has(overrideKey)) {
-            const override = marinaNoteOverrides.get(overrideKey);
-            const responseHasNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note") || Object.prototype.hasOwnProperty.call(booking || {}, "note");
-            if (responseHasNote && normalized.note === override) marinaNoteOverrides.delete(overrideKey);
-            else normalized.note = override;
-          } else if (!normalized.note && previous?.note) normalized.note = previous.note;
-          bookings.push(normalized);
-        }
-        after = payload?.next_cursor ?? payload?.pagination?.next_cursor ?? payload?.meta?.next_cursor ?? "";
-      } while (after);
+        do {
+          const params = new URLSearchParams({ ...marinaBookingQueryRange(range), limit: "200" });
+          if (after) params.set("after", after);
+          const payload = await marinaRequest(`/v1/bookings?${params}`, { source });
+          const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.bookings) ? payload.bookings : Array.isArray(payload) ? payload : [];
+          for (const booking of rows) {
+            const normalized = normalizeMarinaBookingRecord(booking, resources);
+            const previous = previousBookings.get(normalized.providerId);
+            const overrideKey = marinaOverrideKey(source, normalized.providerId);
+            if (marinaNoteOverrides.has(overrideKey)) {
+              const override = marinaNoteOverrides.get(overrideKey);
+              const responseHasNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note") || Object.prototype.hasOwnProperty.call(booking || {}, "note");
+              if (responseHasNote && normalized.note === override) marinaNoteOverrides.delete(overrideKey);
+              else normalized.note = override;
+            } else if (!normalized.note && previous?.note) normalized.note = previous.note;
+            bookings.push(normalized);
+          }
+          after = payload?.next_cursor ?? payload?.pagination?.next_cursor ?? payload?.meta?.next_cursor ?? "";
+        } while (after);
+      }
       await mutateJson(CACHE_KEY, defaultCache, (cache) => {
         cache[source] = { ...marinaWorkspaceCache(source), resources, facilities, bookings, updatedAt: new Date().toISOString() };
         storeMarinaOverrides(cache, source);
@@ -654,7 +671,7 @@ if (!window.marina) {
     const source = currentSource;
     const connection = connectionFor(source);
     if (!force && connection.online && Date.now() - connection.lastSuccessfulAt < MOBILE_REFRESH_INTERVAL_MS) return;
-    if (!marinaBuildConfig.configured || !await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY)) return;
+    if (!marinaBuildConfig.configured || !await hasMarinaRefreshToken()) return;
     try { await refresh(currentRange); } catch {}
   }
 
@@ -1066,15 +1083,33 @@ if (!window.marina) {
     },
     clearQuoteCache() { quoteCache.clear(); },
     async getSagaInvoiceSettings() {
-      return normalizeSagaInvoiceSettings(await readJson(SAGA_INVOICE_SETTINGS_KEY, defaultSagaInvoiceSettings));
+      const settings = normalizeSagaInvoiceSettings(await readJson(SAGA_INVOICE_SETTINGS_KEY, defaultSagaInvoiceSettings));
+      return { ...settings, sagaWebConfigured: Boolean(await SecureStorage.get(SAGA_WEB_TOKEN_KEY)) };
     },
     async saveSagaInvoiceSettings(input) {
       const settings = normalizeSagaInvoiceSettings(input);
+      const token = String(input?.sagaWebApiToken || "").trim();
+      if (token) {
+        if (token.length > 20_000) throw new TypeError("Cheia API SAGA Web este prea lungă.");
+        await SecureStorage.set(SAGA_WEB_TOKEN_KEY, token);
+      }
       await mutateJson(SAGA_INVOICE_SETTINGS_KEY, defaultSagaInvoiceSettings, (stored) => {
         Object.assign(stored, settings);
         return settings;
       });
-      return settings;
+      return { ...settings, sagaWebConfigured: Boolean(await SecureStorage.get(SAGA_WEB_TOKEN_KEY)) };
+    },
+    async importSagaInvoice(input) {
+      const token = String(await SecureStorage.get(SAGA_WEB_TOKEN_KEY) || "");
+      if (!token) throw Object.assign(new Error("Configurează cheia API SAGA Web în Setări înainte de import."), { code: "saga_web_not_configured", permanent: true });
+      try {
+        const result = await SagaWebApi.importSagaInvoice({ ...input, token });
+        if (result.refreshToken) await SecureStorage.set(SAGA_WEB_TOKEN_KEY, result.refreshToken);
+        return { success: result.success, message: result.message };
+      } catch (error) {
+        if (error?.refreshToken) await SecureStorage.set(SAGA_WEB_TOKEN_KEY, error.refreshToken);
+        throw error;
+      }
     },
     async getSettings(requestedSource = currentSource) {
       const source = SOURCES.has(requestedSource) ? requestedSource : currentSource;

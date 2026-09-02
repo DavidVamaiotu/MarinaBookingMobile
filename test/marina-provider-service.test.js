@@ -40,6 +40,36 @@ test("provider performs no protected probe before OAuth and accepts an empty res
   });
 });
 
+test("provider persists the completed booking cache once after pagination", async () => {
+  const saved = [];
+  const booking = (id) => ({
+    id,
+    resource_id: 31,
+    status: "approved",
+    periods: [{ start_date: "2026-09-01", end_date: "2026-09-01" }]
+  });
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api: {
+      resources: async () => ({ payload: { data: [{ id: 31, name: "Room 31" }] } }),
+      bookings: async ({ after }) => after
+        ? { payload: { data: [booking(2)] } }
+        : { payload: { data: [booking(1)], next_cursor: "page-2" } }
+    },
+    cacheStore: {
+      load: () => ({}),
+      save: (value) => saved.push(structuredClone(value))
+    }
+  });
+
+  const state = await provider.refresh({ start: "2026-09-01", end: "2026-09-30" });
+
+  assert.equal(state.bookings.length, 2);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].bookings.length, 2);
+});
+
 test("provider silently refreshes a saved OAuth session when the app starts", async () => {
   const oauth = new OAuthStub(true);
   let refreshCalls = 0;

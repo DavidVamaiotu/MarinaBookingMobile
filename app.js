@@ -66,7 +66,7 @@ function isMarinaSource(source) { return source === "rooms" || source === "campi
 
 function defaultSagaInvoiceSettings() {
   if (typeof window.SagaInvoice?.defaultSupplierSettings === "function") return window.SagaInvoice.defaultSupplierSettings();
-  return { name: "Marina Park", cif: "", regCom: "", address: "", city: "", county: "", phone: "", email: "", iban: "", country: "RO", vatRate: "11" };
+  return { name: "Marina Park", cif: "", regCom: "", address: "", city: "", county: "", phone: "", email: "", iban: "", country: "RO", vatRate: "11", sagaWebConfigured: false };
 }
 
 function normalizeSagaInvoiceSettings(value = {}) {
@@ -90,7 +90,8 @@ function normalizeSagaInvoiceSettings(value = {}) {
     email: pick("email", "mail", "supplierEmail"),
     iban: pick("iban", "supplierIban"),
     country: pick("country", "tara") || "RO",
-    vatRate: pick("vatRate", "vat_rate") || "11"
+    vatRate: pick("vatRate", "vat_rate") || "11",
+    sagaWebConfigured: input.sagaWebConfigured === true
   };
 }
 
@@ -170,16 +171,22 @@ function applySagaInvoiceSettingsToForm(form, settings = sagaInvoiceSettings) {
   const values = normalizeSagaInvoiceSettings(settings);
   form.elements.supplierName.value = values.name;
   form.elements.supplierCif.value = values.cif;
-  form.elements.supplierRegCom.value = values.regCom;
-  form.elements.supplierAddress.value = values.address;
-  form.elements.supplierCity.value = values.city;
-  form.elements.supplierCounty.value = values.county;
-  form.elements.supplierPhone.value = values.phone;
-  form.elements.supplierEmail.value = values.email;
-  form.elements.supplierIban.value = values.iban;
+  if (form.elements.supplierRegCom) form.elements.supplierRegCom.value = values.regCom;
+  if (form.elements.supplierAddress) form.elements.supplierAddress.value = values.address;
+  if (form.elements.supplierCity) form.elements.supplierCity.value = values.city;
+  if (form.elements.supplierCounty) form.elements.supplierCounty.value = values.county;
+  if (form.elements.supplierPhone) form.elements.supplierPhone.value = values.phone;
+  if (form.elements.supplierEmail) form.elements.supplierEmail.value = values.email;
+  if (form.elements.supplierIban) form.elements.supplierIban.value = values.iban;
   form.elements.vatRate.value = [...form.elements.vatRate.options].some((option) => option.value === values.vatRate)
     ? values.vatRate
     : "11";
+  if (form.elements.sagaWebApiToken) {
+    form.elements.sagaWebApiToken.value = "";
+    form.elements.sagaWebApiToken.placeholder = values.sagaWebConfigured
+      ? "Cheie salvată — lasă gol pentru a o păstra"
+      : "Lipește cheia generată în SAGA Web";
+  }
 }
 
 async function loadSagaInvoiceSettings({ force = false } = {}) {
@@ -258,10 +265,27 @@ async function switchWorkspace(source) {
     if (switchId === workspaceSwitchId && activeWorkspace === source) showError(error);
   }
 }
+const dateTimeFormatterCache = new Map();
+const numberFormatterCache = new Map();
+
+function cachedFormatter(cache, Formatter, locale, options = {}) {
+  const key = JSON.stringify([locale, options]);
+  if (!cache.has(key)) cache.set(key, new Formatter(locale, options));
+  return cache.get(key);
+}
+
+function cachedDateTimeFormatter(locale, options = {}) {
+  return cachedFormatter(dateTimeFormatterCache, Intl.DateTimeFormat, locale, options);
+}
+
+function cachedNumberFormatter(locale, options = {}) {
+  return cachedFormatter(numberFormatterCache, Intl.NumberFormat, locale, options);
+}
+
 function configuredTimeZone() {
   const candidate = state.settings?.timezone || DEFAULT_TIMEZONE;
   try {
-    new Intl.DateTimeFormat("en-GB", { timeZone: candidate }).format();
+    cachedDateTimeFormatter("en-GB", { timeZone: candidate }).format();
     return candidate;
   } catch {
     return DEFAULT_TIMEZONE;
@@ -269,16 +293,16 @@ function configuredTimeZone() {
 }
 
 function todayIso() {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: configuredTimeZone(), year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const parts = Object.fromEntries(cachedDateTimeFormatter("en-CA", { timeZone: configuredTimeZone(), year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date()).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function dateFormatter(locale, options = {}) {
-  return new Intl.DateTimeFormat(locale, { ...options, timeZone: configuredTimeZone() });
+  return cachedDateTimeFormatter(locale, { ...options, timeZone: configuredTimeZone() });
 }
 
 function dateOnlyFormatter(locale, options = {}) {
-  return new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" });
+  return cachedDateTimeFormatter(locale, { ...options, timeZone: "UTC" });
 }
 
 let focusMonth = monthStart(todayIso());
@@ -1364,7 +1388,7 @@ function facilityEligibleForResource(facility, resource) {
 
 function facilityPriceLabel(facility) {
   const amount = (Number(facility.pricePerNightMinor) || 0) / 100;
-  return `${new Intl.NumberFormat("ro-RO", { minimumFractionDigits: amount % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(amount)} lei/noapte`;
+  return `${cachedNumberFormatter("ro-RO", { minimumFractionDigits: amount % 1 ? 2 : 0, maximumFractionDigits: 2 }).format(amount)} lei/noapte`;
 }
 
 function renderFacilityOptions(form = calendarForm(), booking = null) {
@@ -1507,7 +1531,7 @@ function currentQuoteKey(form = calendarForm()) {
 
 function formatCreateMoney(value, formatted = "") {
   if (String(formatted || "").trim()) return String(formatted).trim();
-  return `${new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value) || 0)} lei`;
+  return `${cachedNumberFormatter("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value) || 0)} lei`;
 }
 
 function createPricingNote(quote) {
@@ -2032,7 +2056,7 @@ function populateBookingMenu(booking) {
   const statusLabel = approved ? "Aprobată" : "În așteptare";
   const note = String(booking.note || "").trim();
   const marinaWritable = state.settings?.capabilities?.canMutateBookings === true;
-  const updated = booking.updatedAt ? new Intl.DateTimeFormat("ro-RO", { dateStyle: "medium", timeStyle: "short", timeZone: configuredTimeZone() }).format(new Date(booking.updatedAt)) : "";
+  const updated = booking.updatedAt ? cachedDateTimeFormatter("ro-RO", { dateStyle: "medium", timeStyle: "short", timeZone: configuredTimeZone() }).format(new Date(booking.updatedAt)) : "";
   $("#bookingPaymentMenu").hidden = true;
   $("#bookingPaymentMenuToggle").setAttribute("aria-expanded", "false");
   $("#bookingPaymentMenuToggle").parentElement.hidden = false;
@@ -2285,7 +2309,7 @@ function populateSagaInvoiceDialog(booking, payment) {
   $("#sagaInvoiceClientName").textContent = [customer.firstName, customer.lastName].filter(Boolean).join(" ") || "Client fără nume";
   $("#sagaInvoiceClientAddress").textContent = [customer.address, customer.city, customer.county].filter(Boolean).join(", ") || "Adresa clientului nu este disponibilă";
   $("#sagaInvoiceClientTotal").textContent = total === null ? "Cost total: indisponibil" : `Cost total: ${PricingNote.formatAmount(total)} lei`;
-  $("#sagaInvoiceStatus").textContent = "";
+  $("#sagaInvoiceStatus").textContent = sagaInvoiceSettings.sagaWebConfigured ? "" : "Configurează cheia API SAGA Web în Setări înainte de import.";
 }
 
 async function loadSagaInvoiceDraft(booking) {
@@ -2304,30 +2328,19 @@ async function loadSagaInvoiceDraft(booking) {
 }
 
 function sagaInvoiceSupplierFromForm(form) {
+  const value = (name) => form.elements[name]?.value.trim() || "";
   return {
-    name: form.elements.supplierName.value.trim(),
-    cif: form.elements.supplierCif.value.trim(),
-    regCom: form.elements.supplierRegCom.value.trim(),
-    address: form.elements.supplierAddress.value.trim(),
-    city: form.elements.supplierCity.value.trim(),
-    county: form.elements.supplierCounty.value.trim(),
-    phone: form.elements.supplierPhone.value.trim(),
-    email: form.elements.supplierEmail.value.trim(),
-    iban: form.elements.supplierIban.value.trim(),
+    name: value("supplierName"),
+    cif: value("supplierCif"),
+    regCom: value("supplierRegCom"),
+    address: value("supplierAddress"),
+    city: value("supplierCity"),
+    county: value("supplierCounty"),
+    phone: value("supplierPhone"),
+    email: value("supplierEmail"),
+    iban: value("supplierIban"),
     country: "RO"
   };
-}
-
-function downloadTextFile(content, filename, type = "application/xml;charset=utf-8") {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function openSagaInvoiceDialog(booking) {
@@ -3054,7 +3067,8 @@ $("#settingsForm").addEventListener("submit", async (event) => {
     try {
       const saved = await window.marina.saveSagaInvoiceSettings({
         ...sagaInvoiceSupplierFromForm(form),
-        vatRate: form.elements.vatRate.value
+        vatRate: form.elements.vatRate.value,
+        sagaWebApiToken: form.elements.sagaWebApiToken.value.trim()
       });
       sagaInvoiceSettings = { ...defaultSagaInvoiceSettings(), ...normalizeSagaInvoiceSettings(saved) };
       applySagaInvoiceSettingsToForm(form);
@@ -3086,7 +3100,7 @@ sagaInvoiceDialog.addEventListener("close", () => {
   selectedBookingId = null;
   selectedBookingView = "";
 });
-$("#sagaInvoiceForm").addEventListener("submit", (event) => {
+$("#sagaInvoiceForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const draft = sagaInvoiceDraft;
@@ -3097,23 +3111,27 @@ $("#sagaInvoiceForm").addEventListener("submit", (event) => {
     missing.focus();
     return;
   }
-  try {
-    const result = window.SagaInvoice.buildSagaInvoice({
-      booking: draft.booking,
-      payment: draft.payment,
-      resource: resourceById(draft.booking.resourceId),
-      supplier: sagaInvoiceSupplierFromForm(form),
-      invoiceNumber: form.elements.invoiceNumber.value.trim(),
-      issueDate: form.elements.issueDate.value,
-      vatRate: form.elements.vatRate.value
-    });
-    downloadTextFile(result.xml, result.filename);
-    sagaInvoiceDialog.close();
-    showToast(`Factura SAGA a fost descărcată: ${result.filename}`, "success");
-  } catch (error) {
-    $("#sagaInvoiceStatus").textContent = shortErrorMessage(error);
-    showError(error);
-  }
+  await runExclusive(`saga-invoice-import:${activeWorkspace}:${draft.booking.localId}`, [$("#sagaInvoiceSubmit")], async () => {
+    try {
+      const supplier = sagaInvoiceSupplierFromForm(form);
+      const result = window.SagaInvoice.buildSagaInvoice({
+        booking: draft.booking,
+        payment: draft.payment,
+        resource: resourceById(draft.booking.resourceId),
+        supplier,
+        invoiceNumber: form.elements.invoiceNumber.value.trim(),
+        issueDate: form.elements.issueDate.value,
+        vatRate: form.elements.vatRate.value
+      });
+      $("#sagaInvoiceStatus").textContent = "Se creează factura și se trimite în SAGA Web…";
+      await window.marina.importSagaInvoice({ xml: result.xml, filename: result.filename, codFiscal: supplier.cif });
+      sagaInvoiceDialog.close();
+      showToast(`Factura ${result.invoiceNumber} a fost trimisă în SAGA Web pentru import.`, "success");
+    } catch (error) {
+      $("#sagaInvoiceStatus").textContent = shortErrorMessage(error);
+      showError(error);
+    }
+  });
 });
 
 $("#bookingMenuSendPayment").addEventListener("click", async () => {

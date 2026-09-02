@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   getSettings: (source = currentSource) => invoke("settings:get", sources.has(source) ? source : currentSource),
   getSagaInvoiceSettings: () => invoke("saga-invoice-settings:get"),
   saveSagaInvoiceSettings: (input) => invoke("saga-invoice-settings:save", input),
+  importSagaInvoice: (input) => invoke("saga-invoice:import", input),
   clearCredentials: (source = currentSource) => invoke("settings:clear", sources.has(source) ? source : currentSource),
   connectMarina: () => invoke("marina:connect"),
   disconnectMarina: () => invoke("marina:disconnect"),

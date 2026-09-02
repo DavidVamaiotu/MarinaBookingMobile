@@ -29,11 +29,17 @@
 
   function mapState(resources, bookings, { includeTrashed = false } = {}) {
     const items = bookings.filter((booking) => includeTrashed || !booking.trashed).map(toItem);
+    const itemsByResource = new Map();
+    for (const item of items) {
+      const resourceItems = itemsByResource.get(item.resourceId) || [];
+      resourceItems.push(item);
+      itemsByResource.set(item.resourceId, resourceItems);
+    }
     return resources.map((resource) => ({
       id: Number(resource.id),
       title: resource.title || `Spațiul ${resource.id}`,
       subtitle: "",
-      items: items.filter((item) => item.resourceId === Number(resource.id))
+      items: itemsByResource.get(Number(resource.id)) || []
     }));
   }
 
