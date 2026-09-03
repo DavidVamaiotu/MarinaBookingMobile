@@ -34,6 +34,28 @@ if (!window.marina) {
   const SAGA_INVOICE_SETTINGS_KEY = "marina-saga-invoice-settings-v1";
   const SAGA_WEB_TOKEN_KEY = "saga-web-api-token";
   const MARINA_REFRESH_TOKEN_KEY = "marina-oauth-refresh-token";
+  // Matches src/main/marina-oauth-controller.js: only these OAuth rejections mean the
+  // saved grant is definitively dead. Transient failures (offline, 5xx) must keep the
+  // stored refresh token so the user is not forced back through interactive login.
+  const TERMINAL_REFRESH_ERRORS = ["invalid_grant", "invalid_token", "invalid_client", "unauthorized_client"];
+  const marinaMutationKeys = new Map();
+  let marinaRefreshInFlight = null;
+
+  function marinaMutationKey(scope) {
+    const existing = marinaMutationKeys.get(scope);
+    if (existing) return existing;
+    const key = crypto.randomUUID();
+    if (marinaMutationKeys.size >= 50) marinaMutationKeys.delete(marinaMutationKeys.keys().next().value);
+    marinaMutationKeys.set(scope, key);
+    return key;
+  }
+  function settleMarinaMutationKey(scope, error) {
+    if (!scope || !marinaMutationKeys.has(scope)) return;
+    // Keep the key while the outcome is unknown (network/timeout/5xx/429) so a user
+    // retry reuses it and the server can dedupe; discard it once the result is definitive.
+    const unknown = !error || error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500;
+    if (!unknown) marinaMutationKeys.delete(scope);
+  }
   const callbacks = new Set();
   const reservationLinkCallbacks = new Set();
   const marinaNoteRequests = new Map();
@@ -254,8 +276,15 @@ if (!window.marina) {
     const payload = mobilePayload(response);
     if (response.status < 200 || response.status >= 300) throw Object.assign(new Error("Descoperirea OAuth Marina a eșuat."), { code: "marina_oauth_discovery_failed", status: response.status });
     const endpoint = (value, fallback) => {
-      const url = new URL(value || fallback, `${marinaBuildConfig.apiBaseUrl}/`);
-      if (url.protocol !== "https:" || url.origin !== new URL(marinaBuildConfig.apiBaseUrl).origin) throw Object.assign(new Error("Metadatele OAuth Marina conțin un endpoint invalid."), { code: "marina_oauth_metadata_invalid" });
+      let url;
+      let baseOrigin;
+      try {
+        url = new URL(value || fallback, `${marinaBuildConfig.apiBaseUrl}/`);
+        baseOrigin = new URL(marinaBuildConfig.apiBaseUrl).origin;
+      } catch {
+        throw Object.assign(new Error("Metadatele OAuth Marina conțin un endpoint invalid."), { code: "marina_oauth_metadata_invalid" });
+      }
+      if (url.protocol !== "https:" || url.origin !== baseOrigin) throw Object.assign(new Error("Metadatele OAuth Marina conțin un endpoint invalid."), { code: "marina_oauth_metadata_invalid" });
       return url.toString();
     };
     marinaMetadata = {
@@ -294,7 +323,17 @@ if (!window.marina) {
       marinaRefreshTokenKnown = Boolean(refreshToken);
       if (!refreshToken) throw Object.assign(new Error("Conectarea Marina este necesară."), { code: "marina_reconnect_required", auth: true, permanent: true });
       try { return await marinaTokenRequest({ grant_type: "refresh_token", client_id: marinaBuildConfig.clientId, refresh_token: refreshToken }); }
-      catch (error) { marinaAccessToken = ""; marinaAccessExpiresAt = 0; await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY); marinaRefreshTokenKnown = false; throw error; }
+      catch (error) {
+        marinaAccessToken = "";
+        marinaAccessExpiresAt = 0;
+        // Mirror the desktop controller: a temporary outage must not erase the saved
+        // grant and force another interactive login.
+        if (TERMINAL_REFRESH_ERRORS.includes(error?.code) || error?.status === 401) {
+          await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY);
+          marinaRefreshTokenKnown = false;
+        }
+        throw error;
+      }
     })();
     try { return await marinaRefreshPromise; } finally { marinaRefreshPromise = null; }
   }
@@ -613,6 +652,12 @@ if (!window.marina) {
   }
 
   async function refresh(range) {
+    if (marinaRefreshInFlight) return marinaRefreshInFlight;
+    marinaRefreshInFlight = refreshOnce(range);
+    try { return await marinaRefreshInFlight; } finally { marinaRefreshInFlight = null; }
+  }
+
+  async function refreshOnce(range) {
     currentRange = range;
     const source = currentSource;
     await ensureMarinaOverrides(source);
@@ -745,12 +790,31 @@ if (!window.marina) {
     return providerId;
   }
   async function marinaMutation(path, body, { method = "POST", version, idempotencyKey, source = currentSource } = {}) {
-    const headers = { "Idempotency-Key": idempotencyKey || crypto.randomUUID() };
+    const scope = idempotencyKey ? null : JSON.stringify([method, path, version ?? null, body]);
+    const headers = { "Idempotency-Key": idempotencyKey || marinaMutationKey(scope) };
     if (version !== undefined && version !== null) headers["If-Match"] = String(version);
     const versionedBody = version !== undefined && version !== null && (method === "PATCH" || path.endsWith("/status"))
       ? { ...body, expected_version: Number(version) }
       : body;
-    const result = await marinaRequest(path, { method, body: versionedBody, headers, source });
+    let result;
+    try {
+      result = await marinaRequest(path, { method, body: versionedBody, headers, source });
+    } catch (error) {
+      settleMarinaMutationKey(scope, error);
+      if (error?.status === 412) {
+        const bookingId = decodeURIComponent(String(path).split("/")[3] || "");
+        if (bookingId) {
+          try {
+            const freshPayload = await marinaRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`, { source });
+            const freshRecord = freshPayload?.data || freshPayload?.booking || freshPayload;
+            await storeMarinaMutationBooking(normalizeMarinaBookingRecord(freshRecord, ((await allCache())[source]?.resources) || []), {}, source);
+          } catch {}
+        }
+        throw Object.assign(new Error("Rezervarea Marina s-a schimbat între timp. Datele actualizate au fost încărcate; verificați din nou valorile înainte de salvare."), error, { code: "marina_stale_version", conflict: true, permanent: true });
+      }
+      throw error;
+    }
+    settleMarinaMutationKey(scope, null);
     return result?.data || result?.booking || result;
   }
   async function marinaQuoteBody(input, source = currentSource) {
@@ -936,6 +1000,7 @@ if (!window.marina) {
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
+      if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
       const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}/status`, { status: patch.status, send_email: Boolean(patch.sendEmail) }, { version: booking.version, source });
       const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), status: patch.status, ...result, id: booking.providerId }, {}, source);
       scheduleMarinaRefresh();
@@ -945,6 +1010,7 @@ if (!window.marina) {
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
+      if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
       const note = String(patch.note ?? "");
       const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, { internal_note: note }, { method: "PATCH", version: booking.version, source });
       const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...(String(result?.id) === booking.providerId ? result : {}), internal_note: note, id: booking.providerId }, { noteOverride: note }, source);
@@ -955,6 +1021,7 @@ if (!window.marina) {
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
+      if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
       const trashed = Boolean(patch.trashed);
       const status = trashed ? "cancelled" : "pending";
       const action = trashed ? "cancel" : "status";
@@ -1107,7 +1174,10 @@ if (!window.marina) {
         if (result.refreshToken) await SecureStorage.set(SAGA_WEB_TOKEN_KEY, result.refreshToken);
         return { success: result.success, message: result.message };
       } catch (error) {
-        if (error?.refreshToken) await SecureStorage.set(SAGA_WEB_TOKEN_KEY, error.refreshToken);
+        if (error?.refreshToken) {
+          try { await SecureStorage.set(SAGA_WEB_TOKEN_KEY, error.refreshToken); }
+          catch (storageError) { console.error("SAGA token rotation failed:", storageError?.code || storageError?.message); }
+        }
         throw error;
       }
     },

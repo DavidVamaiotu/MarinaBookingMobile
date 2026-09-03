@@ -1,6 +1,7 @@
 "use strict";
 
 const { normalizeBaseUrl, normalizeWorkspaceId } = require("../shared/marina-config");
+const { TERMINAL_REFRESH_ERRORS } = require("./marina-oauth-controller");
 
 class MarinaApiError extends Error {
   constructor(message, options = {}) {
@@ -167,7 +168,14 @@ class MarinaV1ApiClient {
         if (response.status === 401 && retryOnUnauthorized && !refreshed) {
           refreshed = true;
           try { await this.oauth.refresh(); }
-          catch (cause) { throw new MarinaApiError("Reconectarea Marina este necesară.", { code: "marina_reconnect_required", auth: true, permanent: true, cause }); }
+          catch (cause) {
+            // Only a definitive OAuth rejection (bad grant/client) means the saved
+            // login is gone; a temporary refresh failure must stay retryable.
+            if (TERMINAL_REFRESH_ERRORS.has(cause?.code) || cause?.status === 401) {
+              throw new MarinaApiError("Reconectarea Marina este necesară.", { code: "marina_reconnect_required", auth: true, permanent: true, cause });
+            }
+            throw new MarinaApiError("Autentificarea Marina nu a putut fi reînnoită momentan. Încercați din nou.", { code: "marina_refresh_unavailable", auth: true, temporary: true, cause });
+          }
           continue;
         }
         if (!response.ok) {

@@ -379,6 +379,10 @@ class MarinaBookingProvider extends EventEmitter {
       .filter(([, minor]) => Number.isInteger(minor) && minor >= 0));
     this.online = false;
     this.refreshInFlight = null;
+    // Idempotency keys for booking mutations, kept per logical operation until the
+    // outcome is definitive so a retry after an unknown-outcome failure reuses the
+    // same key and the server can dedupe instead of creating a duplicate booking.
+    this.mutationKeys = new Map();
     this.refreshTimer = null;
     this.noteRequests = new Map();
     oauth.on("changed", () => this.emitState());
@@ -543,10 +547,12 @@ class MarinaBookingProvider extends EventEmitter {
           let after = null;
           const from = bucharestRangeBoundary(range.start);
           const to = bucharestRangeBoundary(range.end, true);
+          let pages = 0;
           do {
           const response = await this.api.bookings({ from, to, after, limit: 200 });
             loaded.push(...collection(response.payload, ["bookings"]));
             after = response.payload?.next_cursor ?? response.payload?.pagination?.next_cursor ?? response.payload?.meta?.next_cursor ?? null;
+            if (after && ++pages > 50) throw Object.assign(new Error("Sincronizarea Marina a întâlnit prea multe pagini de rezervări."), { code: "marina_sync_page_limit", temporary: true });
           } while (after);
         }
         this.bookings = this.normalizeBookings(loaded);
@@ -619,12 +625,38 @@ class MarinaBookingProvider extends EventEmitter {
     return this.state();
   }
 
+  async idempotentMutation(scope, run) {
+    if (!this.mutationKeys) this.mutationKeys = new Map();
+    let key = this.mutationKeys.get(scope);
+    if (!key) {
+      key = randomUUID();
+      if (this.mutationKeys.size >= 50) this.mutationKeys.delete(this.mutationKeys.keys().next().value);
+      this.mutationKeys.set(scope, key);
+    }
+    let result;
+    try { result = await run(key); }
+    catch (error) {
+      this.settleMutationKey(scope, error);
+      throw error;
+    }
+    this.settleMutationKey(scope, null);
+    return result;
+  }
+
+  settleMutationKey(scope, error) {
+    if (!this.mutationKeys?.has(scope)) return;
+    // Keep the key while the outcome is unknown (network/timeout/5xx/429) so a retry
+    // reuses it; discard once the server gave a definitive answer.
+    const unknown = !error || error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500;
+    if (!unknown) this.mutationKeys.delete(scope);
+  }
+
   async create(input) {
     if (!input.quoteId) throw Object.assign(new Error("Rezervarea Marina necesită o cotație confirmată."), { code: "marina_quote_required", permanent: true });
     const finalQuote = normalizeMarinaQuote((await this.api.quote(quoteBody(input, this.resources))).payload, { mode: "full" });
     const body = bookingBody({ ...input, quoteId: finalQuote.quoteId }, this.resources);
     body.status = input.approved ? "approved" : "pending";
-    const response = await this.api.createBooking(body, randomUUID());
+    const response = await this.idempotentMutation(JSON.stringify(["create", body]), (key) => this.api.createBooking(body, key));
     const created = entity(response.payload, ["booking"]);
     const createdRecord = { ...body, ...created };
     if (!String(createdRecord.note || createdRecord.internal_note || "").trim() && body.internal_note) createdRecord.internal_note = body.internal_note;
@@ -640,17 +672,17 @@ class MarinaBookingProvider extends EventEmitter {
     try {
       if (type === "status") {
         mutationBody = { status: patch.status, send_email: Boolean(patch.sendEmail) };
-        response = await this.api.changeBookingStatus(booking.providerId, mutationBody, randomUUID(), booking.version);
+        response = await this.idempotentMutation(JSON.stringify(["status", booking.providerId, mutationBody, booking.version]), (key) => this.api.changeBookingStatus(booking.providerId, mutationBody, key, booking.version));
       }
       else if (type === "trash") {
         const trashed = Boolean(patch.trashed);
         mutationBody = { status: trashed ? "cancelled" : "pending", send_email: Boolean(patch.sendEmail) };
         response = trashed
-          ? await this.api.cancelBooking(booking.providerId, { send_email: mutationBody.send_email }, randomUUID(), booking.version)
-          : await this.api.changeBookingStatus(booking.providerId, mutationBody, randomUUID(), booking.version);
+          ? await this.idempotentMutation(JSON.stringify(["trash", trashed, booking.providerId, mutationBody, booking.version]), (key) => this.api.cancelBooking(booking.providerId, { send_email: mutationBody.send_email }, key, booking.version))
+          : await this.idempotentMutation(JSON.stringify(["status", booking.providerId, mutationBody, booking.version]), (key) => this.api.changeBookingStatus(booking.providerId, mutationBody, key, booking.version));
       } else if (type === "note") {
         mutationBody = { internal_note: String(patch.note ?? "") };
-        response = await this.api.updateBooking(booking.providerId, mutationBody, randomUUID(), booking.version);
+        response = await this.idempotentMutation(JSON.stringify(["note", booking.providerId, mutationBody, booking.version]), (key) => this.api.updateBooking(booking.providerId, mutationBody, key, booking.version));
       }
       else {
         const merged = { ...booking, ...patch, formData: patch.formData || booking.formData, dates: patch.dates || booking.dates, facilityIds: patch.facilityIds ?? booking.facilityIds };
@@ -660,7 +692,7 @@ class MarinaBookingProvider extends EventEmitter {
           ? { ...patch, quoteId: normalizeMarinaQuote((await this.api.quote(quoteBody(merged, this.resources))).payload, { mode: "full" }).quoteId }
           : patch;
         mutationBody = bookingPatchBody(booking, finalPatch, this.resources);
-        response = await this.api.updateBooking(booking.providerId, mutationBody, randomUUID(), booking.version);
+        response = await this.idempotentMutation(JSON.stringify(["edit", booking.providerId, mutationBody, booking.version]), (key) => this.api.updateBooking(booking.providerId, mutationBody, key, booking.version));
       }
     } catch (error) {
       if (error?.status === 412) {

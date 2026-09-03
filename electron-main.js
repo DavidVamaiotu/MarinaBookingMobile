@@ -95,17 +95,22 @@ function configureAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("error", (error) => console.error("Desktop update failed:", error));
   autoUpdater.on("update-downloaded", async ({ version }) => {
-    const { response } = await dialog.showMessageBox(window, {
-      type: "info",
-      title: "Actualizare pregătită",
-      message: `Marina Booking ${version} a fost descărcată.`,
-      detail: "Repornește aplicația pentru a instala actualizarea.",
-      buttons: ["Repornește și instalează", "Mai târziu"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true
-    });
-    if (response === 0) autoUpdater.quitAndInstall(false, true);
+    try {
+      const options = {
+        type: "info",
+        title: "Actualizare pregătită",
+        message: `Marina Booking ${version} a fost descărcată.`,
+        detail: "Repornește aplicația pentru a instala actualizarea.",
+        buttons: ["Repornește și instalează", "Mai târziu"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true
+      };
+      const { response } = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+      if (response === 0) autoUpdater.quitAndInstall(false, true);
+    } catch (error) {
+      console.error("Desktop update prompt failed:", error);
+    }
   });
   setTimeout(() => void autoUpdater.checkForUpdates().catch((error) => {
     console.error("Desktop update check failed:", error);
@@ -169,7 +174,10 @@ async function importSagaInvoice(input) {
     if (result.refreshToken) await store.setToken(result.refreshToken);
     return { success: result.success, message: result.message };
   } catch (error) {
-    if (error?.refreshToken) await store.setToken(error.refreshToken);
+    if (error?.refreshToken) {
+      try { await store.setToken(error.refreshToken); }
+      catch (storageError) { console.error("SAGA token rotation failed:", storageError?.code || storageError?.message); }
+    }
     throw error;
   }
 }

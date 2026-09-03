@@ -19,13 +19,13 @@ test("typed IPC validators reject malformed booking intent", () => {
     send_email: true,
     payment_type: "deposit",
     payment_reason: "Avans rezervare",
-    idempotencyKey: "123e4567-e89b-42d3-a456-426614174000",
+    idempotencyKey: "123e4567-e89b-42d3-a456-426614174000", // gitleaks:allow — RFC 4122 example UUID fixture, not a credential
     bookingId: 91
   }), {
     send_email: true,
     payment_type: "deposit",
     payment_reason: "Avans rezervare",
-    idempotencyKey: "123e4567-e89b-42d3-a456-426614174000",
+    idempotencyKey: "123e4567-e89b-42d3-a456-426614174000", // gitleaks:allow — RFC 4122 example UUID fixture, not a credential
     bookingId: "91"
   });
   assert.throws(() => validate.marinaPaymentRequest({ reason: "aBcDeF", bookingId: 91 }), /Idempotency-Key/);

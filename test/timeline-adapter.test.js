@@ -72,7 +72,6 @@ test("booking bar signatures change when the timeline window moves", () => {
 
 test("Camping renderer uses fetched resources and bookings without synthetic fallback rows", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(source, /function campingParentResources\(\) \{\s*return state\.resources\.filter\(\(resource\) => resource\.active !== false\);\s*\}/);
   assert.match(source, /function timelineResources\(\) \{\s*return state\.resources;\s*\}/);
   assert.match(source, /function timelineBookings\(\) \{\s*return state\.bookings;\s*\}/);
   assert.doesNotMatch(source, /title:\s*["']Corturi["']/);

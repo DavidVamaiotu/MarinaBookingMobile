@@ -9,7 +9,7 @@ const METADATA_PATH = "/.well-known/oauth-authorization-server";
 const TERMINAL_REFRESH_ERRORS = new Set(["invalid_grant", "invalid_token", "invalid_client", "unauthorized_client"]);
 
 class MarinaOAuthController extends EventEmitter {
-  constructor({ config, tokenStore, openExternal, fetchImpl = globalThis.fetch, cryptoImpl = webcrypto, now = Date.now } = {}) {
+  constructor({ config, tokenStore, openExternal, fetchImpl = globalThis.fetch, cryptoImpl = webcrypto, now = Date.now, timeoutMs = 15000 } = {}) {
     super();
     this.config = config;
     this.tokenStore = tokenStore;
@@ -17,6 +17,7 @@ class MarinaOAuthController extends EventEmitter {
     this.fetchImpl = fetchImpl;
     this.cryptoImpl = cryptoImpl;
     this.now = now;
+    this.timeoutMs = timeoutMs;
     this.metadata = null;
     this.pending = null;
     this.accessToken = "";
@@ -27,9 +28,12 @@ class MarinaOAuthController extends EventEmitter {
 
   endpoint(value, label) {
     let endpoint;
-    try { endpoint = new URL(String(value || ""), `${this.config.apiBaseUrl}/`); }
+    let base;
+    try {
+      endpoint = new URL(String(value || ""), `${this.config.apiBaseUrl}/`);
+      base = new URL(this.config.apiBaseUrl);
+    }
     catch { throw Object.assign(new Error(`Endpoint-ul OAuth ${label} este invalid.`), { code: "marina_oauth_metadata_invalid" }); }
-    const base = new URL(this.config.apiBaseUrl);
     if (endpoint.protocol !== "https:" || endpoint.origin !== base.origin) {
       throw Object.assign(new Error(`Endpoint-ul OAuth ${label} nu aparține serverului Marina configurat.`), { code: "marina_oauth_metadata_invalid" });
     }
@@ -41,7 +45,8 @@ class MarinaOAuthController extends EventEmitter {
     const response = await this.fetchImpl(`${this.config.apiBaseUrl}${METADATA_PATH}`, {
       method: "GET",
       headers: { Accept: "application/json" },
-      redirect: "error"
+      redirect: "error",
+      signal: AbortSignal.timeout(this.timeoutMs)
     });
     if (!response.ok) throw Object.assign(new Error(`Descoperirea OAuth Marina a eșuat (HTTP ${response.status}).`), { code: "marina_oauth_discovery_failed", status: response.status, temporary: response.status >= 500 });
     const payload = await response.json();
@@ -79,7 +84,8 @@ class MarinaOAuthController extends EventEmitter {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
       body: OAuth.formBody(values),
-      redirect: "error"
+      redirect: "error",
+      signal: AbortSignal.timeout(this.timeoutMs)
     });
     let payload = {};
     try { payload = await response.json(); } catch {}
@@ -115,7 +121,10 @@ class MarinaOAuthController extends EventEmitter {
 
   async applyToken(payload) {
     this.accessToken = String(payload.access_token);
-    this.accessTokenExpiresAt = this.now() + Math.max(0, Number(payload.expires_in) || 0) * 1000;
+    const expiresIn = Number(payload.expires_in);
+    // OAuth2 requires expires_in; fall back to a conservative lifetime for
+    // non-conformant endpoints instead of refreshing on every request.
+    this.accessTokenExpiresAt = this.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 300) * 1000;
     if (payload.scope) this.effectiveScopes = MarinaConfig.normalizeScopes(payload.scope);
     if (payload.refresh_token) await this.tokenStore.setRefreshToken(String(payload.refresh_token));
   }
@@ -166,7 +175,8 @@ class MarinaOAuthController extends EventEmitter {
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
           body: OAuth.formBody({ token: refreshToken, token_type_hint: "refresh_token", client_id: this.config.clientId }),
-          redirect: "error"
+          redirect: "error",
+          signal: AbortSignal.timeout(this.timeoutMs)
         });
       }
     } finally {

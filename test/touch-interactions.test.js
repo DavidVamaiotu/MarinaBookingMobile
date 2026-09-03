@@ -90,7 +90,7 @@ test("high resolution horizontal scrolling preserves the full trackpad delta", (
 });
 
 test("availability timeline uses native two-axis scrolling and lazy edge shifts", () => {
-  const availabilitySource = appSource.slice(appSource.indexOf("function availabilityDayWidth"), appSource.indexOf("function renderCommands"));
+  const availabilitySource = appSource.slice(appSource.indexOf("function availabilityDayWidth"), appSource.indexOf("function applyState"));
   assert.match(appSource, /const AVAILABILITY_WINDOW_DAYS = 84/);
   assert.match(availabilitySource, /requestAnimationFrame\(\(\) => \{\s*availabilityScrollFrame = null;\s*recenterAvailabilityWindow\(\)/);
   assert.match(availabilitySource, /shiftAvailabilityWindow\(AVAILABILITY_WINDOW_SHIFT_DAYS\)/);

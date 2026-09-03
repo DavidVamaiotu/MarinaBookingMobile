@@ -56,7 +56,9 @@
     if (!authorizationEndpoint || !clientId || !redirectUri || !state || !codeChallenge) {
       throw new MarinaOAuthError("Parametrii OAuth Marina sunt incompleți.", { code: "marina_oauth_config_incomplete" });
     }
-    const url = new URL(authorizationEndpoint);
+    let url;
+    try { url = new URL(authorizationEndpoint); }
+    catch { throw new MarinaOAuthError("Endpoint-ul de autorizare Marina este invalid.", { code: "marina_oauth_config_incomplete" }); }
     url.search = new URLSearchParams({
       response_type: "code",
       client_id: String(clientId),
