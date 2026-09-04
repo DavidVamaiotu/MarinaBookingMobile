@@ -857,7 +857,8 @@ test("provider changes Marina Avans through the authoritative deposit_minor fiel
   assert.equal(updateCall[0], "booking-deposit");
   assert.deepEqual(updateCall[1], {
     deposit_minor: 4000,
-    send_email: false
+    send_email: false,
+    internal_note: "Sosire târzie\n\nCost total: 100 RON, Depozit: 40 RON, Rest: 60 RON\n\nAtenție la parcare"
   });
   assert.match(updateCall[2], /^[0-9a-f-]{36}$/);
   assert.equal(updateCall[3], 4);
@@ -1092,4 +1093,105 @@ test("Camping fetches real resources and creates and edits bookings against thei
   assert.equal(updateCalls[0].body.resource_id, undefined);
   assert.equal(updateCalls[0].body.periods, undefined);
   assert.equal(updateCalls[0].body.quote_id, undefined);
+});
+
+test("provider resolves booking by provider ID and handles nested data.booking payloads", async () => {
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api: {
+      resources: async () => ({ payload: { data: [{ id: 42, title: "Camera 42", booking_mode: "date_range" }] } }),
+      booking: async (id) => ({
+        payload: {
+          data: {
+            booking: {
+              id: Number(id),
+              resource_id: 42,
+              status: "confirmed",
+              periods: [{ start_date: "2026-09-10", end_date: "2026-09-12" }],
+              internal_note: "Rezervare VIP",
+              version: 5
+            }
+          }
+        }
+      })
+    }
+  });
+
+  const resolved = await provider.getBookingByProviderId("999");
+  assert.equal(resolved.localId, "marina:999");
+  assert.equal(resolved.providerId, "999");
+  assert.equal(resolved.note, "Rezervare VIP");
+  assert.equal(provider.findBooking("marina:999").note, "Rezervare VIP");
+});
+
+test("provider reuses idempotency key on updateDeposit retries and preserves updated note", async () => {
+  const depositKeys = [];
+  let paymentVersion = 2;
+  const provider = new MarinaBookingProvider({
+    config: MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" }),
+    oauth: new OAuthStub(true),
+    api: {
+      payment: async () => ({
+        payload: {
+          data: {
+            id: "123",
+            price: { total_minor: 50000, deposit_minor: 10000 },
+            internal_note: "Cost total: 500 RON, Depozit: 100 RON, Rest: 400 RON",
+            version: paymentVersion
+          }
+        }
+      }),
+      updateDeposit: async (id, body, key, version) => {
+        depositKeys.push(key);
+        if (depositKeys.length === 1) {
+          paymentVersion = 3;
+          const timeoutError = new Error("Gateway timeout");
+          timeoutError.status = 504;
+          throw timeoutError;
+        }
+        paymentVersion = version + 1;
+        return {
+          payload: {
+            data: {
+              id,
+              deposit_minor: body.deposit_minor,
+              internal_note: "Cost total: 500 RON, Depozit: 100 RON, Rest: 400 RON",
+              version: version + 1
+            }
+          }
+        };
+      }
+    }
+  });
+  provider.resources = [{ id: 1, providerId: "10" }];
+  provider.bookings = [{
+    localId: "marina:123",
+    providerId: "123",
+    providerResourceId: "10",
+    resourceId: 1,
+    dates: ["2026-09-01", "2026-09-02"],
+    status: "approved",
+    providerStatus: "approved",
+    trashed: false,
+    formData: {},
+    note: "Cost total: 500 RON, Depozit: 100 RON, Rest: 400 RON",
+    version: 2
+  }];
+  provider.refreshAfterMutation = () => {};
+
+  await assert.rejects(
+    () => provider.updateDeposit("marina:123", { deposit: 200, total: 500 }),
+    /Gateway timeout/
+  );
+  const result = await provider.updateDeposit("marina:123", { deposit: 200, total: 500 });
+  assert.equal(depositKeys.length, 2);
+  assert.equal(depositKeys[0], depositKeys[1], "Idempotency key must be reused on retry");
+  assert.equal(result.deposit, 200);
+  assert.equal(result.note, "Cost total: 500 RON, Depozit: 200 RON, Rest: 300 RON");
+  assert.equal(provider.findBooking("marina:123").note, "Cost total: 500 RON, Depozit: 200 RON, Rest: 300 RON");
+
+  await provider.updateDeposit("marina:123", { deposit: 200, total: 500 });
+  assert.equal(depositKeys.length, 3);
+  assert.notEqual(depositKeys[1], depositKeys[2], "A completed mutation must not retain its idempotency key");
 });

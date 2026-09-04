@@ -19,8 +19,11 @@ function collection(payload, keys = []) {
 }
 
 function entity(payload, keys = []) {
+  for (const key of keys) {
+    if (payload?.data?.[key] && typeof payload.data[key] === "object") return payload.data[key];
+    if (payload?.[key] && typeof payload[key] === "object") return payload[key];
+  }
   if (payload?.data && !Array.isArray(payload.data)) return payload.data;
-  for (const key of keys) if (payload?.[key] && typeof payload[key] === "object") return payload[key];
   return payload || {};
 }
 
@@ -31,21 +34,28 @@ function noteBodies(payload) {
 }
 
 function joinNoteValues(values) {
-  return values
-    .map((value) => String(value || "").trim())
-    .filter((value, index, allValues) => value && allValues.indexOf(value) === index)
-    .join("\n\n");
+  const seen = new Set();
+  const rows = [];
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const key = text.replace(/\s+/g, " ");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(text);
+  }
+  return rows.join("\n\n");
 }
 
 function noteText(booking) {
   const hasInternalNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note");
-  if (hasInternalNote) return joinNoteValues([booking?.internal_note]);
+  if (hasInternalNote) return PricingNote.normalize(joinNoteValues([booking?.internal_note]));
   const primaryNote = String(booking?.note || "").trim();
-  return primaryNote || joinNoteValues(noteBodies(booking));
+  return PricingNote.normalize(primaryNote || joinNoteValues(noteBodies(booking)));
 }
 
 function externalId(value) {
-  const id = value?.id ?? value?.booking_id ?? value?.resource_id;
+  const id = value?.id ?? value?.booking_id ?? value?.resource_id ?? value?.booking?.id ?? value?.booking?.booking_id ?? value?.resource?.id;
   if (id === undefined || id === null || String(id).trim() === "") throw Object.assign(new Error("Răspunsul Marina nu conține identificatorul necesar."), { code: "marina_invalid_response", permanent: true });
   return String(id);
 }
@@ -353,7 +363,8 @@ function bookingPatchBody(current, patch, resources) {
   const previousCustomer = customerFromFormData(current.formData);
   const nextCustomer = customerFromFormData(merged.formData);
   if (JSON.stringify(previousCustomer) !== JSON.stringify(nextCustomer)) body.customer = nextCustomer;
-  if (String(current.note || "") !== String(merged.note || "")) body.internal_note = String(merged.note || "");
+  const note = PricingNote.normalize(merged.note);
+  if (String(current.note || "") !== String(note)) body.internal_note = note;
   if (Object.prototype.hasOwnProperty.call(patch, "sendEmail")) body.send_email = Boolean(patch.sendEmail);
   return body;
 }
@@ -373,7 +384,7 @@ class MarinaBookingProvider extends EventEmitter {
     this.facilities = Array.isArray(cached.facilities) ? cached.facilities : [];
     this.bookings = Array.isArray(cached.bookings) ? cached.bookings : [];
     this.lastSuccessfulSync = cached.lastSuccessfulSync || null;
-    this.noteOverrides = new Map(Object.entries(cached.noteOverrides && typeof cached.noteOverrides === "object" ? cached.noteOverrides : {}));
+    this.noteOverrides = new Map(Object.entries(cached.noteOverrides && typeof cached.noteOverrides === "object" ? cached.noteOverrides : {}).map(([key, value]) => [key, String(value ?? "").trim()]));
     this.manualDepositOverrides = new Map(Object.entries(cached.manualDepositOverrides && typeof cached.manualDepositOverrides === "object" ? cached.manualDepositOverrides : {})
       .map(([providerId, minor]) => [providerId, Number(minor)])
       .filter(([, minor]) => Number.isInteger(minor) && minor >= 0));
@@ -450,8 +461,9 @@ class MarinaBookingProvider extends EventEmitter {
 
   storeMutationBooking(booking, options = {}) {
     if (Object.prototype.hasOwnProperty.call(options, "noteOverride")) {
-      this.noteOverrides.set(booking.providerId, String(options.noteOverride ?? ""));
-      booking.note = String(options.noteOverride ?? "");
+      const noteOverride = String(options.noteOverride ?? "").trim();
+      this.noteOverrides.set(booking.providerId, noteOverride);
+      booking.note = noteOverride;
     }
     const index = this.bookings.findIndex((item) => item.localId === booking.localId);
     if (index === -1) this.bookings = [...this.bookings, booking];
@@ -598,10 +610,10 @@ class MarinaBookingProvider extends EventEmitter {
       resourceId: detailed.providerResourceId ? detailed.resourceId : current.resourceId,
       providerResourceId: detailed.providerResourceId || current.providerResourceId,
       dates: detailed.dates.length ? detailed.dates : current.dates,
-      note: joinNoteValues([
+      note: PricingNote.normalize(joinNoteValues([
         detailed.note || (!hasInternalNote ? current.note : ""),
         ...(!hasInternalNote && !detailed.note && !current.note ? noteValues : [])
-      ])
+      ]))
     });
     let merged = merge([]);
     this.bookings = this.bookings.map((booking) => booking.localId === merged.localId ? merged : booking);
@@ -617,6 +629,26 @@ class MarinaBookingProvider extends EventEmitter {
     }
     return merged;
   }
+
+  async getBookingByProviderId(providerId) {
+    const bookingId = String(providerId || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(bookingId)) {
+      throw Object.assign(new Error("Linkul rezervării conține un identificator invalid."), { code: "marina_booking_id_invalid", permanent: true });
+    }
+    if (!this.resources.length) {
+      const resourceResponse = await this.api.resources();
+      this.resources = collection(resourceResponse.payload, ["resources"]).map(normalizeResource);
+      this.persistCache();
+    }
+    const bookingResponse = await this.api.booking(bookingId);
+    const detailedRecord = entity(bookingResponse.payload, ["booking"]);
+    if (!detailedRecord || typeof detailedRecord !== "object") {
+      throw Object.assign(new Error("API-ul Marina nu a returnat rezervarea solicitată."), { code: "marina_booking_missing", permanent: true });
+    }
+    const normalized = normalizeBooking({ ...detailedRecord, id: detailedRecord.id ?? bookingId }, this.resources);
+    return this.storeMutationBooking(normalized);
+  }
+
   refreshAfterMutation() {
     if (!this.visibleRange) return this.state();
     const range = { ...this.visibleRange };
@@ -647,7 +679,7 @@ class MarinaBookingProvider extends EventEmitter {
     if (!this.mutationKeys?.has(scope)) return;
     // Keep the key while the outcome is unknown (network/timeout/5xx/429) so a retry
     // reuses it; discard once the server gave a definitive answer.
-    const unknown = !error || error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500;
+    const unknown = Boolean(error) && (error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500);
     if (!unknown) this.mutationKeys.delete(scope);
   }
 
@@ -773,10 +805,13 @@ class MarinaBookingProvider extends EventEmitter {
       ? this.noteOverrides.get(booking.providerId)
       : input.note ?? booking.note ?? "");
     const nextNote = PricingNote.update(currentNote, deposit, total).note;
-    const body = { deposit_minor: depositMinor, send_email: false };
+    const body = { deposit_minor: depositMinor, send_email: false, internal_note: nextNote };
+    const scope = JSON.stringify(["deposit", booking.providerId, depositMinor]);
     let response;
     try {
-      response = await this.api.updateDeposit(booking.providerId, body, randomUUID(), latestRecord.version ?? booking.version);
+      response = await this.idempotentMutation(scope, (key) =>
+        this.api.updateDeposit(booking.providerId, body, key, latestRecord.version ?? booking.version)
+      );
     } catch (error) {
       if (error?.status === 412) {
         await Promise.allSettled([this.details(localId)]);
@@ -787,9 +822,7 @@ class MarinaBookingProvider extends EventEmitter {
     const returned = response?.payload?.data?.booking || response?.payload?.data || response?.payload?.booking || response?.payload || {};
     const returnedDepositMinor = Number(returned?.price?.deposit_minor ?? returned?.deposit_minor);
     const responseMatchesDeposit = !Number.isSafeInteger(returnedDepositMinor) || returnedDepositMinor === depositMinor;
-    const returnedNote = responseMatchesDeposit
-      ? String(returned?.internal_note ?? returned?.note ?? nextNote)
-      : nextNote;
+    const returnedNote = nextNote;
     const totalMinor = Math.round(total * 100);
     const optimisticPrice = (latestRecord?.price || booking.price)
       ? { ...(latestRecord?.price || booking.price), total_minor: totalMinor, deposit_minor: depositMinor, balance_minor: totalMinor - depositMinor }

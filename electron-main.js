@@ -14,6 +14,7 @@ const { MarinaTokenStore } = require("./src/main/marina-token-store");
 const { SagaWebTokenStore } = require("./src/main/saga-web-token-store");
 const { MarinaV1ApiClient } = require("./src/main/marina-v1-client");
 const { MarinaBookingProvider } = require("./src/main/marina-provider-service");
+const { parseReservationDeepLink } = require("./src/shared/reservation-deep-link");
 const validate = require("./src/main/validation");
 
 app.setName("Marina Booking");
@@ -71,6 +72,17 @@ function registerDesktopOAuthProtocol() {
 
 async function handleOAuthUrl(url) {
   if (!url) return;
+  const reservationLink = parseReservationDeepLink(url);
+  if (reservationLink) {
+    if (window?.webContents) {
+      window.webContents.send("reservation:link", reservationLink);
+      window.show();
+      window.focus();
+    } else {
+      pendingOAuthUrls.push(url);
+    }
+    return;
+  }
   const oauth = contexts.rooms?.oauth;
   if (!oauth) { pendingOAuthUrls.push(url); return; }
   try {
@@ -204,6 +216,10 @@ function registerIpc() {
     assertReadableSource(source);
     return contextFor(source).service.details(validate.id(localId, "localId"));
   });
+  ipcMain.handle("booking:by-provider-id", (_event, source, providerId) => {
+    assertReadableSource(source);
+    return contextFor(source).service.getBookingByProviderId(validate.marinaBookingId(providerId));
+  });
   ipcMain.handle("booking:edit", (_event, source, localId, patch) => { assertWritableSource(source); return contextFor(source).service.update(validate.id(localId, "localId"), validate.bookingPatch(patch), "edit"); });
   ipcMain.handle("booking:status", (_event, source, localId, patch) => { assertWritableSource(source); return contextFor(source).service.update(validate.id(localId, "localId"), validate.bookingPatch(patch), "status"); });
   ipcMain.handle("booking:note", (_event, source, localId, patch) => { assertWritableSource(source); return contextFor(source).service.update(validate.id(localId, "localId"), validate.bookingPatch(patch), "note"); });
@@ -324,6 +340,7 @@ async function start() {
   registerIpc();
   for (const context of Object.values(contexts)) context.service.start();
   await createWindow();
+  for (const url of pendingOAuthUrls.splice(0)) await handleOAuthUrl(url);
   configureAutoUpdater();
 }
 

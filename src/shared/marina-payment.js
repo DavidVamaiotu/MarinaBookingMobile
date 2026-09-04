@@ -1,5 +1,7 @@
 "use strict";
 
+const PricingNote = require("./pricing-note");
+
 const MANUAL_DEPOSIT_FIELD = "parkline_manual_deposit_minor";
 
 function objectValue(value) {
@@ -123,6 +125,7 @@ function normalizeMarinaPayment(payload, { bookingId = null, fallbackNote = "", 
   if (typeof snapshot.note !== "string" && typeof snapshot.internalNote === "string") snapshot.note = snapshot.internalNote;
   if (typeof snapshot.note !== "string" && typeof snapshot.remark === "string") snapshot.note = snapshot.remark;
   if (typeof snapshot.note !== "string" && fallbackNote !== undefined) snapshot.note = String(fallbackNote || "");
+  if (typeof snapshot.note === "string") snapshot.note = PricingNote.normalize(snapshot.note);
   if (typeof snapshot.email !== "string" && fallbackEmail) snapshot.email = String(fallbackEmail);
   snapshot.email_available = source.email_available !== undefined
     ? Boolean(source.email_available)

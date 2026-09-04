@@ -11,3 +11,5 @@ coverage/
 .DS_Store
 *.jks
 *.keystore
+.pi-smart-router/
+.plan_task/

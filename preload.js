@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   bootstrap: (range) => invoke("state:bootstrap", currentSource, range),
   refresh: (range, options = {}) => invoke("state:refresh", currentSource, range, options),
   getBooking: (id) => invoke("booking:get", currentSource, id),
+  getBookingByProviderId: (id, source) => invoke("booking:by-provider-id", sourceFor({ source }), id),
   createBooking: (input) => invoke("booking:create", sourceFor(input), input),
   editBooking: (id, patch) => invoke("booking:edit", sourceFor(patch), id, patch),
   setStatus: (id, patch) => invoke("booking:status", sourceFor(patch), id, patch),
@@ -38,6 +39,12 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   clearCredentials: (source = currentSource) => invoke("settings:clear", sources.has(source) ? source : currentSource),
   connectMarina: () => invoke("marina:connect"),
   disconnectMarina: () => invoke("marina:disconnect"),
+  platform: "desktop",
+  onReservationLink: (callback) => {
+    const listener = (_event, link) => callback(link);
+    ipcRenderer.on("reservation:link", listener);
+    return () => ipcRenderer.removeListener("reservation:link", listener);
+  },
   onStateChanged: (callback) => {
     const listener = (_event, payload) => { if (payload?.source === currentSource) callback(payload.state); };
     ipcRenderer.on("state:changed", listener);

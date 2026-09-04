@@ -41,3 +41,32 @@ test("pricing note update removes stale canonical and legacy duplicates", () => 
     "Sosire târzie\n\nCost total: 400 RON, Depozit: 180 RON, Rest: 220 RON\n\nParcare inclusă"
   );
 });
+
+test("pricing note normalize collapses duplicate pricing lines without changing amounts", () => {
+  const duplicated = [
+    "Sosire târzie",
+    "Cost total: 400 RON, Depozit: 180 RON, Rest: 220 RON",
+    "Cost total: 400 RON, Depozit: 120 RON, Rest: 280 RON",
+    "Avans: 90, Cost: 400, Rest: 310",
+    "Parcare inclusă"
+  ].join("\n\n");
+  assert.equal(
+    PricingNote.normalize(duplicated),
+    "Sosire târzie\n\nCost total: 400 RON, Depozit: 180 RON, Rest: 220 RON\n\nParcare inclusă"
+  );
+  assert.equal(PricingNote.normalize("Notă simplă"), "Notă simplă");
+  assert.equal(PricingNote.normalize(""), "");
+  assert.equal(PricingNote.normalize(undefined), "");
+  assert.equal(PricingNote.normalize("Cost total: 100 RON, Depozit: 30 RON, Rest: 70 RON"), "Cost total: 100 RON, Depozit: 30 RON, Rest: 70 RON");
+});
+
+test("pricing note update appends pricing line when note has no pre-existing pricing line but total is provided", () => {
+  const result = PricingNote.update("Clientul dorește pat pliant", 50, 200);
+  assert.equal(result.note, "Clientul dorește pat pliant\n\nCost total: 200 RON, Depozit: 50 RON, Rest: 150 RON");
+  assert.equal(result.deposit, 50);
+  assert.equal(result.total, 200);
+  assert.equal(result.balance, 150);
+
+  const emptyResult = PricingNote.update("", 50, 200);
+  assert.equal(emptyResult.note, "Cost total: 200 RON, Depozit: 50 RON, Rest: 150 RON");
+});

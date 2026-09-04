@@ -7,7 +7,6 @@ import { marinaAvailabilityPeriod, marinaBookingDates, marinaBookingIsTrashed, m
 import { customerFromFormData } from "../src/shared/marina-customer.js";
 import { MANUAL_DEPOSIT_FIELD, normalizeMarinaPayment } from "../src/shared/marina-payment.js";
 import { normalizeMarinaQuote } from "../src/shared/marina-quote.js";
-import { normalizeFormData } from "../src/shared/form-data.js";
 import * as BookingFields from "../src/shared/booking-fields.js";
 import * as PricingNote from "../src/shared/pricing-note.js";
 import * as MarinaConfig from "../src/shared/marina-config.js";
@@ -205,7 +204,7 @@ if (!window.marina) {
     if (!marinaOverridesHydration.has(source)) marinaOverridesHydration.set(source, (async () => {
       const cache = await allCache();
       const marina = cache[source] || marinaWorkspaceCache(source);
-      for (const [providerId, note] of Object.entries(marina.noteOverrides || {})) marinaNoteOverrides.set(marinaOverrideKey(source, providerId), String(note ?? ""));
+      for (const [providerId, note] of Object.entries(marina.noteOverrides || {})) marinaNoteOverrides.set(marinaOverrideKey(source, providerId), String(note ?? "").trim());
       for (const [providerId, minor] of Object.entries(marina.manualDepositOverrides || {})) {
         const amount = Number(minor);
         if (Number.isInteger(amount) && amount >= 0) marinaManualDepositOverrides.set(marinaOverrideKey(source, providerId), amount);
@@ -585,7 +584,7 @@ if (!window.marina) {
 
   function normalizeMarinaBookingRecord(booking, resources) {
     const periods = marinaBookingPeriods(booking);
-    const providerId = String(booking.id ?? booking.booking_id ?? booking.bookingId ?? "").trim();
+    const providerId = String(booking.id ?? booking.booking_id ?? booking.bookingId ?? booking?.booking?.id ?? booking?.booking?.booking_id ?? "").trim();
     if (!providerId) throw Object.assign(new Error("API-ul Marina a returnat o rezervare fără identificator."), { code: "marina_invalid_response", permanent: true });
     const providerResourceId = marinaBookingResourceId(booking, periods);
     const resource = resources.find((item) => item.providerId === providerResourceId);
@@ -629,13 +628,24 @@ if (!window.marina) {
     return rows.map((note) => String(note?.body ?? note?.note ?? note?.text ?? "").trim()).filter(Boolean);
   }
 
+  function marinaJoinNoteValues(values) {
+    const seen = new Set();
+    const rows = [];
+    for (const value of values) {
+      const text = String(value || "").trim();
+      if (!text) continue;
+      const key = text.replace(/\s+/g, " ");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(text);
+    }
+    return rows.join("\n\n");
+  }
+
   function marinaNoteText(booking) {
     const hasInternalNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note");
     const primaryNote = String(booking?.note || "").trim();
-    return (hasInternalNote ? [booking?.internal_note] : primaryNote ? [primaryNote] : marinaNoteBodies(booking))
-      .map((value) => String(value || "").trim())
-      .filter((value, index, values) => value && values.indexOf(value) === index)
-      .join("\n\n");
+    return PricingNote.normalize(marinaJoinNoteValues(hasInternalNote ? [booking?.internal_note] : primaryNote ? [primaryNote] : marinaNoteBodies(booking)));
   }
 
   function fetchMarinaNotes(providerId, source = currentSource) {
@@ -675,6 +685,7 @@ if (!window.marina) {
       let after = "";
       if (MarinaConfig.capabilities(marinaEffectiveScopes).bookingsRead) {
         const previousBookings = new Map((((await allCache())[source]?.bookings) || []).map((booking) => [booking.providerId, booking]));
+        let pages = 0;
         do {
           const params = new URLSearchParams({ ...marinaBookingQueryRange(range), limit: "200" });
           if (after) params.set("after", after);
@@ -693,6 +704,7 @@ if (!window.marina) {
             bookings.push(normalized);
           }
           after = payload?.next_cursor ?? payload?.pagination?.next_cursor ?? payload?.meta?.next_cursor ?? "";
+          if (after && ++pages > 50) throw Object.assign(new Error("Sincronizarea Marina a întâlnit prea multe pagini de rezervări."), { code: "marina_sync_page_limit", temporary: true });
         } while (after);
       }
       await mutateJson(CACHE_KEY, defaultCache, (cache) => {
@@ -757,7 +769,7 @@ if (!window.marina) {
     const normalized = normalizeMarinaBookingRecord(rawBooking, cache[source].resources);
     const overrideKey = marinaOverrideKey(source, normalized.providerId);
     if (Object.prototype.hasOwnProperty.call(options, "noteOverride")) {
-      const noteOverride = String(options.noteOverride ?? "");
+      const noteOverride = String(options.noteOverride ?? "").trim();
       marinaNoteOverrides.set(overrideKey, noteOverride);
       normalized.note = noteOverride;
     }
@@ -802,11 +814,12 @@ if (!window.marina) {
     } catch (error) {
       settleMarinaMutationKey(scope, error);
       if (error?.status === 412) {
-        const bookingId = decodeURIComponent(String(path).split("/")[3] || "");
+        const match = String(path).match(/\/bookings\/([^/]+)/);
+        const bookingId = match ? decodeURIComponent(match[1]) : "";
         if (bookingId) {
           try {
             const freshPayload = await marinaRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`, { source });
-            const freshRecord = freshPayload?.data || freshPayload?.booking || freshPayload;
+            const freshRecord = freshPayload?.data?.booking || freshPayload?.data || freshPayload?.booking || freshPayload;
             await storeMarinaMutationBooking(normalizeMarinaBookingRecord(freshRecord, ((await allCache())[source]?.resources) || []), {}, source);
           } catch {}
         }
@@ -815,7 +828,7 @@ if (!window.marina) {
       throw error;
     }
     settleMarinaMutationKey(scope, null);
-    return result?.data || result?.booking || result;
+    return result?.data?.booking || result?.data || result?.booking || result;
   }
   async function marinaQuoteBody(input, source = currentSource) {
     const period = marinaStayPeriod(input.dates);
@@ -860,7 +873,8 @@ if (!window.marina) {
     const previousCustomer = customerFromFormData(current.formData);
     const nextCustomer = customerFromFormData(merged.formData);
     if (JSON.stringify(previousCustomer) !== JSON.stringify(nextCustomer)) body.customer = nextCustomer;
-    if (String(current.note || "") !== String(merged.note || "")) body.internal_note = String(merged.note || "");
+    const note = PricingNote.normalize(merged.note);
+    if (String(current.note || "") !== String(note)) body.internal_note = note;
     if (Object.prototype.hasOwnProperty.call(patch, "sendEmail")) body.send_email = Boolean(patch.sendEmail);
     return body;
   }
@@ -934,10 +948,7 @@ if (!window.marina) {
         resourceId: detailed.providerResourceId ? detailed.resourceId : cached.resourceId,
         providerResourceId: detailed.providerResourceId || cached.providerResourceId,
         dates: detailed.dates.length ? detailed.dates : cached.dates,
-        note: (hasInternalNote ? [detailed.note] : [detailed.note || cached.note, ...(!detailed.note && !cached.note ? noteValues : [])])
-          .map((value) => String(value || "").trim())
-          .filter((value, index, values) => value && values.indexOf(value) === index)
-          .join("\n\n")
+        note: PricingNote.normalize(marinaJoinNoteValues(hasInternalNote ? [detailed.note] : [detailed.note || cached.note, ...(!detailed.note && !cached.note ? noteValues : [])]))
       });
       let merged = merge([]);
       await mutateJson(CACHE_KEY, defaultCache, (cache) => {
@@ -1079,13 +1090,11 @@ if (!window.marina) {
           ? marinaNoteOverrides.get(overrideKey)
           : input.note ?? booking.note ?? "");
         const nextNote = PricingNote.update(currentNote, deposit, total).note;
-        const body = { deposit_minor: depositMinor, send_email: false };
+        const body = { deposit_minor: depositMinor, send_email: false, internal_note: nextNote };
         const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, body, { method: "PATCH", version: latestRecord.version ?? booking.version, source });
         const returnedDepositMinor = Number(result?.price?.deposit_minor ?? result?.deposit_minor);
         const responseMatchesDeposit = !Number.isSafeInteger(returnedDepositMinor) || returnedDepositMinor === depositMinor;
-        const returnedNote = responseMatchesDeposit
-          ? String(result?.internal_note ?? result?.note ?? nextNote)
-          : nextNote;
+        const returnedNote = nextNote;
         const totalMinor = Math.round(total * 100);
         const optimisticPrice = (latestRecord?.price || booking.price)
           ? { ...(latestRecord?.price || booking.price), total_minor: totalMinor, deposit_minor: depositMinor, balance_minor: totalMinor - depositMinor }

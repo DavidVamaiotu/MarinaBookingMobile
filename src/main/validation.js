@@ -23,6 +23,12 @@ function id(value, label = "id") {
   return result;
 }
 
+function marinaBookingId(value, label = "providerId") {
+  const result = text(value, label, 128, true);
+  if (!/^[A-Za-z0-9._:-]+$/.test(result)) throw new TypeError(`${label} este invalid.`);
+  return result;
+}
+
 function dates(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 366) throw new TypeError("Datele trebuie să conțină între 1 și 366 de valori.");
   const result = [...new Set(value.map(String))].sort();
@@ -153,7 +159,7 @@ function sagaInvoiceSettings(value) {
     phone: text(value.phone, "Telefonul furnizorului", 80),
     email: text(value.email, "Emailul furnizorului", 320),
     iban: text(value.iban, "IBAN-ul furnizorului", 100),
-    country: "RO",
+    country: text(value.country || "RO", "Țara furnizorului", 10, true),
     vatRate: text(value.vatRate ?? "11", "Cota TVA", 12, true)
   };
   const vatRate = Number(result.vatRate);
@@ -175,4 +181,4 @@ function sagaInvoiceImport(value) {
   };
 }
 
-module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, facilityIds, formData, id, marinaPaymentRequest, object, quoteInput, range, sagaInvoiceImport, sagaInvoiceSettings, text };
+module.exports = { availabilityDates, bookingInput, bookingPatch, dates, deposit, facilityIds, formData, id, marinaBookingId, marinaPaymentRequest, object, quoteInput, range, sagaInvoiceImport, sagaInvoiceSettings, text };

@@ -2648,7 +2648,9 @@ async function endDrag(event) {
     const formData = BookingFields.prepareFormData(completed.booking.formData, completed.booking.resourceId);
     const quote = requireValidQuote(await window.marina.quoteBooking({ resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, dates: completed.booking.dates, formData, facilityIds: completed.booking.facilityIds || [], bookingFormType, mode: "full", forceFresh: true, source }));
     if (source !== activeWorkspace) throw workspaceChangedError();
-    await runApiAction("editBooking", completed.booking.localId, { dates: completed.booking.dates, resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, formData, facilityIds: completed.booking.facilityIds || [], bookingFormType, ...(quote.quoteId ? { quoteId: quote.quoteId } : {}), source });
+    const note = recalculatedBookingNote(quote, completed.booking.note);
+    await runApiAction("editBooking", completed.booking.localId, { dates: completed.booking.dates, resourceId: completed.booking.resourceId, sourceResourceId: completed.booking.resourceId, formData, facilityIds: completed.booking.facilityIds || [], bookingFormType, ...(quote.quoteId ? { quoteId: quote.quoteId } : {}), note, source });
+    completed.booking.note = note;
     renderTimeline();
     void refreshRange({ force: false, quiet: true });
   } catch (error) {

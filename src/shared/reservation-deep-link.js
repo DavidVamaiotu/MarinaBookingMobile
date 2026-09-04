@@ -3,8 +3,10 @@
 const RESERVATION_LINK_HOST = "booking.husi.ro";
 const RESERVATION_LINK_PATH = "/open/reservation";
 const RESERVATION_APP_PROTOCOL = "ro.marinapark.booking.mobile:";
+const RESERVATION_DESKTOP_PROTOCOL = "ro.marinapark.booking.desktop:";
 const RESERVATION_APP_HOST = "reservation";
 const RESERVATION_SOURCES = new Set(["rooms", "camping"]);
+const RESERVATION_PROTOCOLS = new Set([RESERVATION_APP_PROTOCOL, RESERVATION_DESKTOP_PROTOCOL]);
 
 function parseReservationDeepLink(value) {
   let url;
@@ -17,7 +19,7 @@ function parseReservationDeepLink(value) {
   const isHttpsLink = url.protocol === "https:"
     && url.hostname === RESERVATION_LINK_HOST
     && url.pathname.replace(/\/+$/, "") === RESERVATION_LINK_PATH;
-  const isAppLink = url.protocol === RESERVATION_APP_PROTOCOL
+  const isAppLink = RESERVATION_PROTOCOLS.has(url.protocol)
     && url.hostname === RESERVATION_APP_HOST;
   if (!isHttpsLink && !isAppLink) return null;
 
@@ -32,6 +34,7 @@ module.exports = {
   RESERVATION_LINK_HOST,
   RESERVATION_LINK_PATH,
   RESERVATION_APP_PROTOCOL,
+  RESERVATION_DESKTOP_PROTOCOL,
   RESERVATION_APP_HOST,
   parseReservationDeepLink
 };

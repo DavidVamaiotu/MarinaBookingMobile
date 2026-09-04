@@ -18,10 +18,29 @@ function formValue(formData, ...aliases) {
   return String(fieldValue(match?.[1]) || "").trim();
 }
 
+const ADDRESS_ALIASES = [
+  "address_line1", "address_city", "address_county", "address_country",
+  "address", "line1", "adresa", "city", "oras", "localitate", "county", "judet", "country", "tara"
+];
+
+function customerAddressFromFormData(formData) {
+  const address = {};
+  const line1 = formValue(formData, "address_line1", "address", "line1", "adresa");
+  const city = formValue(formData, "address_city", "city", "oras", "localitate");
+  const county = formValue(formData, "address_county", "county", "judet");
+  const country = formValue(formData, "address_country", "country", "tara");
+  if (line1) address.line1 = line1;
+  if (city) address.city = city;
+  if (county) address.county = county;
+  if (country) address.country = country;
+  return address;
+}
+
 function customFieldsFromFormData(formData) {
   const result = {};
   for (const [name, field] of Object.entries(formData || {})) {
     if (BookingFields.matchesName(name, "firstName", "lastName", "email", "phone", "adults", "children")) continue;
+    if (BookingFields.matchesName(name, ...ADDRESS_ALIASES)) continue;
     const value = String(fieldValue(field)).trim();
     if (value) result[String(name)] = value;
   }
@@ -34,9 +53,15 @@ function customerFromFormData(formData) {
     last_name: formValue(formData, "lastName"),
     email: formValue(formData, "email"),
     phone: formValue(formData, "phone"),
-    address: {},
+    address: customerAddressFromFormData(formData),
     custom_fields: customFieldsFromFormData(formData)
   };
 }
 
-module.exports = { customerFromFormData, customFieldsFromFormData, fieldValue, formValue };
+module.exports = {
+  customerAddressFromFormData,
+  customerFromFormData,
+  customFieldsFromFormData,
+  fieldValue,
+  formValue
+};

@@ -12,6 +12,7 @@ const {
 
 const root = path.join(__dirname, "..");
 const appSource = fs.readFileSync(path.join(root, "app.js"), "utf8");
+const electronSource = fs.readFileSync(path.join(root, "electron-main.js"), "utf8");
 const bridgeSource = fs.readFileSync(path.join(root, "mobile", "mobile-bridge.js"), "utf8");
 const manifestSource = fs.readFileSync(path.join(root, "android", "app", "src", "main", "AndroidManifest.xml"), "utf8");
 
@@ -21,6 +22,7 @@ test("reservation links accept the booking.husi.ro Rooms and Camping contract", 
   assert.deepEqual(parseReservationDeepLink("https://booking.husi.ro/open/reservation?source=rooms&booking_id=123"), { source: "rooms", bookingId: "123" });
   assert.deepEqual(parseReservationDeepLink("https://booking.husi.ro/open/reservation/?source=camping&booking_id=abc-123"), { source: "camping", bookingId: "abc-123" });
   assert.deepEqual(parseReservationDeepLink("ro.marinapark.booking.mobile://reservation?source=camping&booking_id=456"), { source: "camping", bookingId: "456" });
+  assert.deepEqual(parseReservationDeepLink("ro.marinapark.booking.desktop://reservation?source=rooms&booking_id=789"), { source: "rooms", bookingId: "789" });
 });
 
 test("reservation links reject foreign hosts, invalid workspaces, and unsafe IDs", () => {
@@ -52,4 +54,9 @@ test("a reservation link remains pending while OAuth is completed", () => {
   assert.match(appSource, /pendingReservationLink/);
   assert.match(appSource, /applyState\(await window\.marina\.connectMarina\(\)\)/);
   assert.match(appSource, /onStateChanged\(\(next\) => \{[\s\S]*processPendingReservationLink\(\)/);
+});
+
+test("desktop drains cold-start links after creating the window and preserves provider ID grammar", () => {
+  assert.match(electronSource, /await createWindow\(\);\s*for \(const url of pendingOAuthUrls\.splice\(0\)\) await handleOAuthUrl\(url\);/);
+  assert.match(electronSource, /getBookingByProviderId\(validate\.marinaBookingId\(providerId\)\)/);
 });

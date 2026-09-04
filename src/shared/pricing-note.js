@@ -40,17 +40,43 @@
 
   function update(note, deposit, total) {
     const currentPricing = parse(note);
-    if (!currentPricing) throw new TypeError("Nota rezervării nu conține un Cost valid.");
     const nextDeposit = Number(deposit);
-    const savedTotal = Number(total === undefined ? currentPricing.total : total);
+    const savedTotal = Number(total === undefined ? currentPricing?.total : total);
+    if (!currentPricing && (total === undefined || !Number.isFinite(savedTotal) || savedTotal <= 0)) {
+      throw new TypeError("Nota rezervării nu conține un Cost valid.");
+    }
     if (!Number.isFinite(nextDeposit) || !Number.isFinite(savedTotal) || nextDeposit < 0 || nextDeposit > savedTotal) {
       throw new TypeError("Avansul trebuie să fie între zero și costul rezervării.");
     }
     const balance = Math.round((savedTotal - nextDeposit) * 100) / 100;
     const line = format({ total: savedTotal, deposit: nextDeposit, balance });
     const current = String(note || "");
+    let updatedNote;
+    if (currentPricing) {
+      let inserted = false;
+      updatedNote = current.replace(ANY_PRICING_LINE, (match, ...args) => {
+        const offset = args.at(-2);
+        if (!inserted && offset === currentPricing.index && match === currentPricing.text) {
+          inserted = true;
+          return line;
+        }
+        return "";
+      }).replace(/(?:[ \t]*\r?\n){3,}/g, "\n\n").trim();
+    } else {
+      updatedNote = current.trim() ? `${current.trim()}\n\n${line}` : line;
+    }
+    return { note: updatedNote, deposit: nextDeposit, total: savedTotal, balance, line };
+  }
+
+  function normalize(note) {
+    const value = String(note ?? "");
+    const currentPricing = parse(value);
+    if (!currentPricing) return value;
+    // Collapse repeated pricing lines to a single canonical line while keeping the
+    // first line's own amounts — never recomputes or "corrects" the stored values.
+    const line = format({ total: currentPricing.total, deposit: currentPricing.deposit, balance: currentPricing.balance });
     let inserted = false;
-    const updatedNote = current.replace(ANY_PRICING_LINE, (match, ...args) => {
+    return value.replace(ANY_PRICING_LINE, (match, ...args) => {
       const offset = args.at(-2);
       if (!inserted && offset === currentPricing.index && match === currentPricing.text) {
         inserted = true;
@@ -58,8 +84,7 @@
       }
       return "";
     }).replace(/(?:[ \t]*\r?\n){3,}/g, "\n\n").trim();
-    return { note: updatedNote, deposit: nextDeposit, total: savedTotal, balance, line };
   }
 
-  return { LEGACY_PRICING_LINE, PRICING_LINE, format, formatAmount, parse, parseAmount, update };
+  return { LEGACY_PRICING_LINE, PRICING_LINE, format, formatAmount, normalize, parse, parseAmount, update };
 });

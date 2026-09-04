@@ -29,6 +29,8 @@ test("typed IPC validators reject malformed booking intent", () => {
     bookingId: "91"
   });
   assert.throws(() => validate.marinaPaymentRequest({ reason: "aBcDeF", bookingId: 91 }), /Idempotency-Key/);
+  assert.equal(validate.marinaBookingId("abc.123"), "abc.123");
+  assert.throws(() => validate.marinaBookingId("../123"), /invalid/);
   assert.equal(validate.bookingInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } } }).resourceId, 4);
   assert.deepEqual(validate.quoteInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } }, facilityIds: [7, 4] }).facilityIds, [4, 7]);
   assert.deepEqual(validate.bookingPatch({ facilityIds: [] }).facilityIds, []);
