@@ -9,6 +9,8 @@ const { normalizeMarinaQuote } = require("../shared/marina-quote");
 const { orderMarinaResources } = require("../shared/marina-resource-order");
 const { marinaBookingIsTrashed } = require("../shared/mobile-api");
 const PricingNote = require("../shared/pricing-note");
+const MarinaOperationRegistry = require("../shared/marina-operation-registry");
+const MarinaSyncResponse = require("../shared/marina-sync-response");
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 
@@ -389,11 +391,12 @@ class MarinaBookingProvider extends EventEmitter {
       .map(([providerId, minor]) => [providerId, Number(minor)])
       .filter(([, minor]) => Number.isInteger(minor) && minor >= 0));
     this.online = false;
-    this.refreshInFlight = null;
+    this.refreshInFlight = new Map();
+    this.refreshSequence = 0;
     // Idempotency keys for booking mutations, kept per logical operation until the
     // outcome is definitive so a retry after an unknown-outcome failure reuses the
     // same key and the server can dedupe instead of creating a duplicate booking.
-    this.mutationKeys = new Map();
+    this.mutationOperations = MarinaOperationRegistry.createOperationRegistry({ createKey: randomUUID });
     this.refreshTimer = null;
     this.noteRequests = new Map();
     oauth.on("changed", () => this.emitState());
@@ -441,10 +444,18 @@ class MarinaBookingProvider extends EventEmitter {
       commands: [],
       diagnostics: { provider: "marina", online: this.online, authPaused: !connected, queued: 0, sending: 0, failed: 0, conflicts: 0, lastSuccessfulSync: this.lastSuccessfulSync },
       settings: this.settings(),
-      range: dates
+      range: { ...dates },
+      source: this.config.workspaceSlug || this.api.workspaceSlug || ""
     };
   }
-  emitState() { this.emit("state", this.state()); }
+  emitState(range = this.visibleRange) { this.emit("state", this.state(range)); }
+
+  sessionGeneration() { return typeof this.oauth.generation === "function" ? this.oauth.generation() : 0; }
+  assertSession(generation) {
+    if (generation !== this.sessionGeneration() || !this.oauth.status().connected) {
+      throw Object.assign(new Error("Sesiunea Marina s-a schimbat."), { code: "marina_session_superseded", temporary: true });
+    }
+  }
 
   persistCache(bookings = this.bookings) {
     this.cacheStore?.save?.({
@@ -473,16 +484,16 @@ class MarinaBookingProvider extends EventEmitter {
     return booking;
   }
 
-  normalizeBookings(records, previousBookings = this.bookings) {
+  normalizeBookings(records, previousBookings = this.bookings, resources = this.resources, noteOverrides = this.noteOverrides) {
     const previous = new Map(previousBookings.map((booking) => [booking.providerId, booking]));
     return records.map((booking) => {
-      const normalized = normalizeBooking(booking, this.resources);
+      const normalized = normalizeBooking(booking, resources);
       const cached = previous.get(normalized.providerId);
-      if (this.noteOverrides.has(normalized.providerId)) {
-        const override = this.noteOverrides.get(normalized.providerId);
+      if (noteOverrides.has(normalized.providerId)) {
+        const override = noteOverrides.get(normalized.providerId);
         const responseHasNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note")
           || Object.prototype.hasOwnProperty.call(booking || {}, "note");
-        if (responseHasNote && normalized.note === override) this.noteOverrides.delete(normalized.providerId);
+        if (responseHasNote && normalized.note === override) noteOverrides.delete(normalized.providerId);
         else normalized.note = override;
       } else if (!normalized.note && cached?.note) normalized.note = cached.note;
       return normalized;
@@ -522,8 +533,8 @@ class MarinaBookingProvider extends EventEmitter {
   }
 
   async connect() { await this.oauth.connect(); return this.state(); }
-  async disconnect() {
-    await this.oauth.disconnect();
+  clearSession() {
+    this.refreshSequence += 1;
     this.resources = [];
     this.facilities = [];
     this.bookings = [];
@@ -531,29 +542,46 @@ class MarinaBookingProvider extends EventEmitter {
     this.lastSuccessfulSync = null;
     this.noteOverrides.clear();
     this.manualDepositOverrides.clear();
+    this.mutationOperations.clear();
     this.persistCache([]);
     return this.state();
   }
 
-  async refresh(range) {
-    this.visibleRange = range;
+  async disconnect() {
+    try { await this.oauth.disconnect(); }
+    finally { return this.clearSession(); }
+  }
+
+  async refresh(range, { force = false } = {}) {
+    const capturedRange = { ...range };
+    this.visibleRange = capturedRange;
     if (!this.oauth.status().connected) return this.state(range); // Never probe protected endpoints before OAuth.
-    if (this.refreshInFlight) return this.refreshInFlight;
-    this.refreshInFlight = (async () => {
+    const generation = typeof this.oauth.generation === "function" ? this.oauth.generation() : 0;
+    const requestKey = JSON.stringify([generation, capturedRange.start, capturedRange.end]);
+    if (!force && this.refreshInFlight.has(requestKey)) return this.refreshInFlight.get(requestKey);
+    const sequence = ++this.refreshSequence;
+    const isCurrent = () => sequence === this.refreshSequence
+      && generation === (typeof this.oauth.generation === "function" ? this.oauth.generation() : 0)
+      && this.oauth.status().connected;
+    const superseded = () => Object.assign(new Error("Sincronizarea Marina a fost înlocuită de o cerere mai nouă."), { code: "marina_refresh_superseded", temporary: true });
+    const request = (async () => {
       try {
         const capabilities = this.settings().capabilities;
         if (!capabilities.resourcesRead) {
+          if (!isCurrent()) throw superseded();
           this.resources = [];
           this.facilities = [];
           this.bookings = [];
           this.online = true;
-          this.emitState();
-          return this.state(range);
+          this.emitState(capturedRange);
+          return this.state(capturedRange);
         }
         const resourcesResponse = await this.api.resources();
-        this.resources = orderMarinaResources(collection(resourcesResponse.payload, ["resources"]).map(normalizeResource), { ignoreLegacy32: this.config.workspaceSlug !== "camping" });
+        const resources = orderMarinaResources(MarinaSyncResponse.collection(resourcesResponse.payload, ["resources"], "resurse")
+          .map(normalizeResource).map((item) => MarinaSyncResponse.validateRecord(item, "resurse")), { ignoreLegacy32: this.config.workspaceSlug !== "camping" });
         const facilitiesResponse = typeof this.api.facilities === "function" ? await this.api.facilities() : { payload: { data: [] } };
-        this.facilities = collection(facilitiesResponse.payload, ["facilities"]).map(normalizeFacility);
+        const facilities = MarinaSyncResponse.collection(facilitiesResponse.payload, ["facilities"], "facilități")
+          .map(normalizeFacility).map((item) => MarinaSyncResponse.validateRecord(item, "facilități"));
         const loaded = [];
         if (capabilities.bookingsRead) {
           let after = null;
@@ -562,25 +590,36 @@ class MarinaBookingProvider extends EventEmitter {
           let pages = 0;
           do {
           const response = await this.api.bookings({ from, to, after, limit: 200 });
-            loaded.push(...collection(response.payload, ["bookings"]));
+            loaded.push(...MarinaSyncResponse.collection(response.payload, ["bookings"], "rezervări"));
             after = response.payload?.next_cursor ?? response.payload?.pagination?.next_cursor ?? response.payload?.meta?.next_cursor ?? null;
             if (after && ++pages > 50) throw Object.assign(new Error("Sincronizarea Marina a întâlnit prea multe pagini de rezervări."), { code: "marina_sync_page_limit", temporary: true });
           } while (after);
         }
-        this.bookings = this.normalizeBookings(loaded);
+        const nextOverrides = new Map(this.noteOverrides);
+        const bookings = this.normalizeBookings(loaded, this.bookings, resources, nextOverrides)
+          .map((item) => MarinaSyncResponse.validateRecord(item, "rezervări"));
+        if (!isCurrent()) throw superseded();
+        this.resources = resources;
+        this.facilities = facilities;
+        this.bookings = bookings;
+        this.noteOverrides = nextOverrides;
         this.online = true;
         this.lastSuccessfulSync = new Date().toISOString();
         this.persistCache();
-        const result = this.state(range);
+        const result = this.state(capturedRange);
         this.emit("state", result);
         return result;
       } catch (error) {
+        if (error?.code === "marina_refresh_superseded") throw error;
+        if (!isCurrent()) throw superseded();
         this.online = Boolean(error.auth);
-        this.emitState();
+        this.emitState(capturedRange);
         throw error;
-      } finally { this.refreshInFlight = null; }
+      }
     })();
-    return this.refreshInFlight;
+    this.refreshInFlight.set(requestKey, request);
+    try { return await request; }
+    finally { if (this.refreshInFlight.get(requestKey) === request) this.refreshInFlight.delete(requestKey); }
   }
 
   findBooking(localId) {
@@ -590,8 +629,10 @@ class MarinaBookingProvider extends EventEmitter {
   }
 
   async details(localId) {
+    const generation = this.sessionGeneration();
     const current = this.findBooking(localId);
     const bookingResponse = await this.api.booking(current.providerId);
+    this.assertSession(generation);
     const detailedRecord = entity(bookingResponse.payload, ["booking"]);
     const detailed = normalizeBooking(detailedRecord, this.resources);
     const hasInternalNote = Object.prototype.hasOwnProperty.call(detailedRecord || {}, "internal_note");
@@ -620,6 +661,7 @@ class MarinaBookingProvider extends EventEmitter {
     this.persistCache();
     this.emitState();
     const fetchedNotes = await notesPromise;
+    this.assertSession(generation);
     const withNotes = merge(fetchedNotes);
     if (withNotes.note !== merged.note) {
       merged = withNotes;
@@ -631,16 +673,19 @@ class MarinaBookingProvider extends EventEmitter {
   }
 
   async getBookingByProviderId(providerId) {
+    const generation = this.sessionGeneration();
     const bookingId = String(providerId || "").trim();
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(bookingId)) {
       throw Object.assign(new Error("Linkul rezervării conține un identificator invalid."), { code: "marina_booking_id_invalid", permanent: true });
     }
     if (!this.resources.length) {
       const resourceResponse = await this.api.resources();
+      this.assertSession(generation);
       this.resources = collection(resourceResponse.payload, ["resources"]).map(normalizeResource);
       this.persistCache();
     }
     const bookingResponse = await this.api.booking(bookingId);
+    this.assertSession(generation);
     const detailedRecord = entity(bookingResponse.payload, ["booking"]);
     if (!detailedRecord || typeof detailedRecord !== "object") {
       throw Object.assign(new Error("API-ul Marina nu a returnat rezervarea solicitată."), { code: "marina_booking_missing", permanent: true });
@@ -652,44 +697,35 @@ class MarinaBookingProvider extends EventEmitter {
   refreshAfterMutation() {
     if (!this.visibleRange) return this.state();
     const range = { ...this.visibleRange };
-    const pending = this.refreshInFlight;
-    void Promise.resolve(pending).catch(() => {}).then(() => this.refresh(range)).catch(() => {});
+    const pending = [...this.refreshInFlight.values()];
+    void Promise.allSettled(pending).then(() => this.refresh(range, { force: true })).catch(() => {});
     return this.state();
   }
 
   async idempotentMutation(scope, run) {
-    if (!this.mutationKeys) this.mutationKeys = new Map();
-    let key = this.mutationKeys.get(scope);
-    if (!key) {
-      key = randomUUID();
-      if (this.mutationKeys.size >= 50) this.mutationKeys.delete(this.mutationKeys.keys().next().value);
-      this.mutationKeys.set(scope, key);
-    }
-    let result;
-    try { result = await run(key); }
-    catch (error) {
-      this.settleMutationKey(scope, error);
-      throw error;
-    }
-    this.settleMutationKey(scope, null);
-    return result;
-  }
-
-  settleMutationKey(scope, error) {
-    if (!this.mutationKeys?.has(scope)) return;
-    // Keep the key while the outcome is unknown (network/timeout/5xx/429) so a retry
-    // reuses it; discard once the server gave a definitive answer.
-    const unknown = Boolean(error) && (error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500);
-    if (!unknown) this.mutationKeys.delete(scope);
+    return this.mutationOperations.run(scope, () => null, (_prepared, key) => run(key));
   }
 
   async create(input) {
+    const generation = this.sessionGeneration();
     if (!input.quoteId) throw Object.assign(new Error("Rezervarea Marina necesită o cotație confirmată."), { code: "marina_quote_required", permanent: true });
-    const finalQuote = normalizeMarinaQuote((await this.api.quote(quoteBody(input, this.resources))).payload, { mode: "full" });
-    const body = bookingBody({ ...input, quoteId: finalQuote.quoteId }, this.resources);
-    body.status = input.approved ? "approved" : "pending";
-    const response = await this.idempotentMutation(JSON.stringify(["create", body]), (key) => this.api.createBooking(body, key));
-    const created = entity(response.payload, ["booking"]);
+    const workspace = this.config.workspaceId ?? this.config.workspaceSlug;
+    const scope = MarinaOperationRegistry.operationScope("create", workspace, input);
+    const response = await this.mutationOperations.run(scope, async () => {
+      const finalQuote = normalizeMarinaQuote((await this.api.quote(quoteBody(input, this.resources))).payload, { mode: "full" });
+      this.assertSession(generation);
+      const body = bookingBody({ ...input, quoteId: finalQuote.quoteId }, this.resources);
+      body.status = input.approved ? "approved" : "pending";
+      return body;
+    }, async (body, key) => {
+      this.assertSession(generation);
+      const result = await this.api.createBooking(body, key);
+      externalId({ ...body, ...entity(result.payload, ["booking"]) });
+      return { result, body };
+    });
+    const { result: createdResponse, body } = response;
+    this.assertSession(generation);
+    const created = entity(createdResponse.payload, ["booking"]);
     const createdRecord = { ...body, ...created };
     if (!String(createdRecord.note || createdRecord.internal_note || "").trim() && body.internal_note) createdRecord.internal_note = body.internal_note;
     const normalized = this.storeMutationBooking(normalizeBooking(createdRecord, this.resources));
@@ -698,6 +734,7 @@ class MarinaBookingProvider extends EventEmitter {
   }
 
   async update(localId, patch, type = "edit") {
+    const generation = this.sessionGeneration();
     const booking = this.findBooking(localId);
     let response;
     let mutationBody;
@@ -720,11 +757,23 @@ class MarinaBookingProvider extends EventEmitter {
         const merged = { ...booking, ...patch, formData: patch.formData || booking.formData, dates: patch.dates || booking.dates, facilityIds: patch.facilityIds ?? booking.facilityIds };
         const repricing = pricingChanged(booking, merged);
         if (repricing && !patch.quoteId) throw Object.assign(new Error("Modificarea prețului Marina necesită o cotație nouă."), { code: "marina_quote_required", permanent: true });
-        const finalPatch = repricing
-          ? { ...patch, quoteId: normalizeMarinaQuote((await this.api.quote(quoteBody(merged, this.resources))).payload, { mode: "full" }).quoteId }
-          : patch;
-        mutationBody = bookingPatchBody(booking, finalPatch, this.resources);
-        response = await this.idempotentMutation(JSON.stringify(["edit", booking.providerId, mutationBody, booking.version]), (key) => this.api.updateBooking(booking.providerId, mutationBody, key, booking.version));
+        if (repricing) {
+          const workspace = this.config.workspaceId ?? this.config.workspaceSlug;
+          const scope = MarinaOperationRegistry.operationScope("reprice", workspace, { bookingId: booking.providerId, version: booking.version, patch });
+          const prepared = await this.mutationOperations.run(scope, async () => {
+            const quoteId = normalizeMarinaQuote((await this.api.quote(quoteBody(merged, this.resources))).payload, { mode: "full" }).quoteId;
+            this.assertSession(generation);
+            return bookingPatchBody(booking, { ...patch, quoteId }, this.resources);
+          }, async (body, key) => {
+            this.assertSession(generation);
+            return { response: await this.api.updateBooking(booking.providerId, body, key, booking.version), body };
+          });
+          response = prepared.response;
+          mutationBody = prepared.body;
+        } else {
+          mutationBody = bookingPatchBody(booking, patch, this.resources);
+          response = await this.idempotentMutation(JSON.stringify(["edit", booking.providerId, mutationBody, booking.version]), (key) => this.api.updateBooking(booking.providerId, mutationBody, key, booking.version));
+        }
       }
     } catch (error) {
       if (error?.status === 412) {
@@ -736,6 +785,7 @@ class MarinaBookingProvider extends EventEmitter {
       }
       throw error;
     }
+    this.assertSession(generation);
     const returned = response?.payload?.data?.booking || response?.payload?.data || response?.payload?.booking || response?.payload || {};
     const returnedId = returned?.booking_id ?? returned?.id;
     const authoritative = returnedId !== undefined && String(returnedId) === booking.providerId ? returned : {};
@@ -789,6 +839,7 @@ class MarinaBookingProvider extends EventEmitter {
     return snapshot;
   }
   async updateDeposit(localId, input = {}) {
+    const generation = this.sessionGeneration();
     const booking = this.findBooking(localId);
     const deposit = Number(input.deposit);
     const total = Number(input.total);
@@ -796,14 +847,17 @@ class MarinaBookingProvider extends EventEmitter {
       throw Object.assign(new Error("Avansul trebuie să fie între zero și costul rezervării."), { code: "invalid_deposit", permanent: true });
     }
     const latestResponse = await this.api.payment(booking.providerId);
+    this.assertSession(generation);
     const latestRecord = latestResponse?.payload?.data?.booking || latestResponse?.payload?.data || latestResponse?.payload?.booking || latestResponse?.payload || {};
     const depositMinor = Math.round(deposit * 100);
     if (!Number.isSafeInteger(depositMinor)) {
       throw Object.assign(new Error("Avansul este prea mare."), { code: "invalid_deposit", permanent: true });
     }
-    const currentNote = String(this.noteOverrides.has(booking.providerId)
-      ? this.noteOverrides.get(booking.providerId)
-      : input.note ?? booking.note ?? "");
+    const responseHasNote = Object.prototype.hasOwnProperty.call(latestRecord, "internal_note") || Object.prototype.hasOwnProperty.call(latestRecord, "note");
+    const currentNote = responseHasNote
+      ? noteText(latestRecord)
+      : PricingNote.normalize(joinNoteValues(await this.fetchNotes(booking.providerId)));
+    this.assertSession(generation);
     const nextNote = PricingNote.update(currentNote, deposit, total).note;
     const body = { deposit_minor: depositMinor, send_email: false, internal_note: nextNote };
     const scope = JSON.stringify(["deposit", booking.providerId, depositMinor]);
@@ -819,6 +873,7 @@ class MarinaBookingProvider extends EventEmitter {
       }
       throw error;
     }
+    this.assertSession(generation);
     const returned = response?.payload?.data?.booking || response?.payload?.data || response?.payload?.booking || response?.payload || {};
     const returnedDepositMinor = Number(returned?.price?.deposit_minor ?? returned?.deposit_minor);
     const responseMatchesDeposit = !Number.isSafeInteger(returnedDepositMinor) || returnedDepositMinor === depositMinor;

@@ -91,3 +91,39 @@ test("token scopes preserve write capabilities when returned as an array or comm
   await controller.applyToken({ access_token: "comma-token", scope: "resources:read,bookings:read,bookings:write" });
   assert.equal(MarinaConfig.capabilities(controller.status().effectiveScopes).canMutateBookings, true);
 });
+
+test("logout invalidates a pending token response before it can restore credentials", async () => {
+  const config = MarinaConfig.createConfig({ MARINA_INTEGRATION_ENABLED: "true", MARINA_OAUTH_CLIENT_ID: "public-client" });
+  let stored = "refresh-token";
+  let setCalls = 0;
+  let resolveToken;
+  const tokenResponse = new Promise((resolve) => { resolveToken = resolve; });
+  const controller = new MarinaOAuthController({
+    config,
+    tokenStore: {
+      setRefreshToken: async (value) => { setCalls += 1; stored = value; },
+      getRefreshToken: async () => stored,
+      clearRefreshToken: async () => { stored = ""; },
+      hasRefreshTokenSync: () => Boolean(stored)
+    },
+    openExternal: async () => {},
+    fetchImpl: async (url) => {
+      if (url.endsWith("/.well-known/oauth-authorization-server")) return response(200, {
+        issuer: "https://booking.husi.ro",
+        token_endpoint: "https://booking.husi.ro/oauth/token",
+        revocation_endpoint: "https://booking.husi.ro/oauth/revoke"
+      });
+      if (url.endsWith("/oauth/revoke")) return response(200, {});
+      return tokenResponse;
+    }
+  });
+
+  const refresh = controller.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  await controller.disconnect();
+  resolveToken(response(200, { access_token: "late-access", refresh_token: "late-refresh", expires_in: 3600 }));
+  await assert.rejects(refresh, { code: "marina_session_superseded" });
+  assert.equal(setCalls, 0);
+  assert.equal(stored, "");
+  assert.equal(controller.status().connected, false);
+});

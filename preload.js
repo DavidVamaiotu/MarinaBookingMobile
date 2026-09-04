@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   importSagaInvoice: (input) => invoke("saga-invoice:import", input),
   clearCredentials: (source = currentSource) => invoke("settings:clear", sources.has(source) ? source : currentSource),
   connectMarina: () => invoke("marina:connect"),
-  disconnectMarina: () => invoke("marina:disconnect"),
+  disconnectMarina: () => invoke("marina:disconnect", currentSource),
   platform: "desktop",
   onReservationLink: (callback) => {
     const listener = (_event, link) => callback(link);

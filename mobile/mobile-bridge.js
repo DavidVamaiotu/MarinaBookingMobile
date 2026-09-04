@@ -14,6 +14,9 @@ import * as MarinaOAuth from "../src/shared/marina-oauth.js";
 import * as SagaWebApi from "../src/shared/saga-web-api.js";
 import { orderMarinaResources } from "../src/shared/marina-resource-order.js";
 import { parseReservationDeepLink } from "../src/shared/reservation-deep-link.js";
+import * as MarinaOperationRegistry from "../src/shared/marina-operation-registry.js";
+import * as MarinaSyncResponse from "../src/shared/marina-sync-response.js";
+import * as MarinaConflictRecovery from "../src/shared/marina-conflict-recovery.js";
 
 const marinaBuildConfig = MarinaConfig.createConfig({
   MARINA_INTEGRATION_ENABLED: typeof __MARINA_INTEGRATION_ENABLED__ === "undefined" ? "false" : __MARINA_INTEGRATION_ENABLED__,
@@ -37,24 +40,10 @@ if (!window.marina) {
   // saved grant is definitively dead. Transient failures (offline, 5xx) must keep the
   // stored refresh token so the user is not forced back through interactive login.
   const TERMINAL_REFRESH_ERRORS = ["invalid_grant", "invalid_token", "invalid_client", "unauthorized_client"];
-  const marinaMutationKeys = new Map();
-  let marinaRefreshInFlight = null;
-
-  function marinaMutationKey(scope) {
-    const existing = marinaMutationKeys.get(scope);
-    if (existing) return existing;
-    const key = crypto.randomUUID();
-    if (marinaMutationKeys.size >= 50) marinaMutationKeys.delete(marinaMutationKeys.keys().next().value);
-    marinaMutationKeys.set(scope, key);
-    return key;
-  }
-  function settleMarinaMutationKey(scope, error) {
-    if (!scope || !marinaMutationKeys.has(scope)) return;
-    // Keep the key while the outcome is unknown (network/timeout/5xx/429) so a user
-    // retry reuses it and the server can dedupe; discard it once the result is definitive.
-    const unknown = !error || error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500;
-    if (!unknown) marinaMutationKeys.delete(scope);
-  }
+  const marinaMutationOperations = MarinaOperationRegistry.createOperationRegistry({ createKey: () => crypto.randomUUID() });
+  const marinaRefreshInFlight = new Map();
+  const marinaRefreshSequences = new Map([["rooms", 0], ["camping", 0]]);
+  const marinaRanges = new Map();
   const callbacks = new Set();
   const reservationLinkCallbacks = new Set();
   const marinaNoteRequests = new Map();
@@ -62,6 +51,8 @@ if (!window.marina) {
   const marinaManualDepositOverrides = new Map();
   const sourceConnections = new Map();
   const jsonWrites = new Map();
+  let secureTokenWrites = Promise.resolve();
+  let marinaAuthGeneration = 0;
   const MOBILE_REFRESH_INTERVAL_MS = 5 * 60_000;
   const MOBILE_RECONNECT_INTERVAL_MS = 15_000;
 
@@ -177,6 +168,17 @@ if (!window.marina) {
     await Preferences.set({ key, value: JSON.stringify(value) });
   }
 
+  function serializeSecureTokenWrite(operation) {
+    const next = secureTokenWrites.catch(() => {}).then(operation);
+    secureTokenWrites = next;
+    return next.finally(() => { if (secureTokenWrites === next) secureTokenWrites = Promise.resolve(); });
+  }
+
+  async function readMarinaRefreshToken() {
+    await secureTokenWrites.catch(() => {});
+    return String(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY) || "");
+  }
+
   function mutateJson(key, fallback, update) {
     const previous = jsonWrites.get(key) || Promise.resolve();
     const operation = previous.catch(() => {}).then(async () => {
@@ -201,16 +203,22 @@ if (!window.marina) {
   const marinaOverridesHydration = new Map();
   const marinaOverrideKey = (source, providerId) => `${source}:${providerId}`;
   async function ensureMarinaOverrides(source = currentSource) {
-    if (!marinaOverridesHydration.has(source)) marinaOverridesHydration.set(source, (async () => {
+    const generation = marinaAuthGeneration;
+    if (!marinaOverridesHydration.has(source)) {
+      const hydration = (async () => {
       const cache = await allCache();
+      if (generation !== marinaAuthGeneration) return;
       const marina = cache[source] || marinaWorkspaceCache(source);
       for (const [providerId, note] of Object.entries(marina.noteOverrides || {})) marinaNoteOverrides.set(marinaOverrideKey(source, providerId), String(note ?? "").trim());
       for (const [providerId, minor] of Object.entries(marina.manualDepositOverrides || {})) {
         const amount = Number(minor);
         if (Number.isInteger(amount) && amount >= 0) marinaManualDepositOverrides.set(marinaOverrideKey(source, providerId), amount);
       }
-    })());
+      })();
+      marinaOverridesHydration.set(source, hydration);
+    }
     await marinaOverridesHydration.get(source);
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
   }
 
   function storeMarinaOverrides(cache, source = currentSource) {
@@ -246,7 +254,7 @@ if (!window.marina) {
 
   async function hasMarinaRefreshToken() {
     if (marinaRefreshTokenKnown !== null) return marinaRefreshTokenKnown;
-    marinaRefreshTokenKnown = Boolean(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY));
+    marinaRefreshTokenKnown = Boolean(await readMarinaRefreshToken());
     return marinaRefreshTokenKnown;
   }
 
@@ -294,7 +302,15 @@ if (!window.marina) {
     return marinaMetadata;
   }
 
-  async function marinaTokenRequest(values) {
+  function marinaSessionSuperseded() {
+    return Object.assign(new Error("Sesiunea Marina s-a schimbat."), { code: "marina_session_superseded", temporary: true });
+  }
+
+  function assertMarinaSession(generation) {
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
+  }
+
+  async function marinaTokenRequest(values, generation = marinaAuthGeneration) {
     const metadata = await marinaDiscover();
     const response = await CapacitorHttp.post({
       url: metadata.tokenEndpoint,
@@ -305,36 +321,44 @@ if (!window.marina) {
     });
     const payload = mobilePayload(response);
     if (response.status < 200 || response.status >= 300 || !payload.access_token) throw Object.assign(new Error(payload.error_description || "Schimbul tokenului OAuth Marina a eșuat."), { code: payload.error || "marina_oauth_token_failed", auth: true, status: response.status });
-    marinaAccessToken = String(payload.access_token);
-    marinaAccessExpiresAt = Date.now() + Math.max(0, Number(payload.expires_in) || 0) * 1000;
-    if (payload.scope) marinaEffectiveScopes = MarinaConfig.normalizeScopes(payload.scope);
+    const accessToken = String(payload.access_token);
+    const expiresAt = Date.now() + Math.max(0, Number(payload.expires_in) || 0) * 1000;
+    const effectiveScopes = payload.scope ? MarinaConfig.normalizeScopes(payload.scope) : marinaEffectiveScopes;
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
     if (payload.refresh_token) {
-      await SecureStorage.set(MARINA_REFRESH_TOKEN_KEY, String(payload.refresh_token));
-      marinaRefreshTokenKnown = true;
+      await serializeSecureTokenWrite(() => SecureStorage.set(MARINA_REFRESH_TOKEN_KEY, String(payload.refresh_token)));
     }
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
+    marinaAccessToken = accessToken;
+    marinaAccessExpiresAt = expiresAt;
+    marinaEffectiveScopes = effectiveScopes;
+    if (payload.refresh_token) marinaRefreshTokenKnown = true;
     return marinaAccessToken;
   }
 
   async function marinaRefreshAccessToken() {
     if (marinaRefreshPromise) return marinaRefreshPromise;
-    marinaRefreshPromise = (async () => {
-      const refreshToken = String(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY) || "");
+    const generation = marinaAuthGeneration;
+    const refreshPromise = (async () => {
+      const refreshToken = await readMarinaRefreshToken();
       marinaRefreshTokenKnown = Boolean(refreshToken);
       if (!refreshToken) throw Object.assign(new Error("Conectarea Marina este necesară."), { code: "marina_reconnect_required", auth: true, permanent: true });
-      try { return await marinaTokenRequest({ grant_type: "refresh_token", client_id: marinaBuildConfig.clientId, refresh_token: refreshToken }); }
+      try { return await marinaTokenRequest({ grant_type: "refresh_token", client_id: marinaBuildConfig.clientId, refresh_token: refreshToken }, generation); }
       catch (error) {
+        if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
         marinaAccessToken = "";
         marinaAccessExpiresAt = 0;
         // Mirror the desktop controller: a temporary outage must not erase the saved
         // grant and force another interactive login.
         if (TERMINAL_REFRESH_ERRORS.includes(error?.code) || error?.status === 401) {
-          await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY);
+          await serializeSecureTokenWrite(() => SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY));
           marinaRefreshTokenKnown = false;
         }
         throw error;
       }
     })();
-    try { return await marinaRefreshPromise; } finally { marinaRefreshPromise = null; }
+    marinaRefreshPromise = refreshPromise;
+    try { return await refreshPromise; } finally { if (marinaRefreshPromise === refreshPromise) marinaRefreshPromise = null; }
   }
 
   async function marinaBearer() {
@@ -345,7 +369,9 @@ if (!window.marina) {
   async function resolveMarinaWorkspaceId(source) {
     const configured = marinaWorkspaceIds.get(source);
     if (configured !== null && configured !== undefined) return configured;
-    if (!marinaWorkspaceResolutions.has(source)) marinaWorkspaceResolutions.set(source, (async () => {
+    if (!marinaWorkspaceResolutions.has(source)) {
+      const generation = marinaAuthGeneration;
+      const resolution = (async () => {
       const payload = await marinaRequest("/v1/workspaces", { source, workspaceScoped: false });
       const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.workspaces) ? payload.workspaces : [];
       const active = rows.filter((workspace) => workspace?.active !== false);
@@ -356,13 +382,17 @@ if (!window.marina) {
       }
       const id = MarinaConfig.normalizeWorkspaceId(selected?.id);
       if (id === null) throw Object.assign(new Error(`Workspace-ul Marina „${source}” nu este accesibil.`), { code: "marina_workspace_missing", permanent: true });
+      if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
       marinaWorkspaceIds.set(source, id);
       return id;
-    })().catch((error) => { marinaWorkspaceResolutions.delete(source); throw error; }));
+      })();
+      marinaWorkspaceResolutions.set(source, resolution);
+      resolution.catch(() => { if (marinaWorkspaceResolutions.get(source) === resolution) marinaWorkspaceResolutions.delete(source); });
+    }
     return marinaWorkspaceResolutions.get(source);
   }
 
-  async function marinaRequest(path, { method = "GET", body, retry = true, headers = {}, source = currentSource, workspaceScoped = true } = {}) {
+  async function marinaRequest(path, { method = "GET", body, retry = true, headers = {}, source = currentSource, workspaceScoped = true, generation = marinaAuthGeneration } = {}) {
     const workspaceId = workspaceScoped ? await resolveMarinaWorkspaceId(source) : null;
     const token = await marinaBearer();
     const response = await CapacitorHttp.request({
@@ -379,7 +409,8 @@ if (!window.marina) {
       connectTimeout: 15000,
       readTimeout: 15000
     });
-    if (response.status === 401 && retry) { await marinaRefreshAccessToken(); return marinaRequest(path, { method, body, retry: false, headers, source, workspaceScoped }); }
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
+    if (response.status === 401 && retry) { await marinaRefreshAccessToken(); return marinaRequest(path, { method, body, retry: false, headers, source, workspaceScoped, generation }); }
     const payload = mobilePayload(response);
     if (response.status < 200 || response.status >= 300) throw Object.assign(new Error(marinaProblemMessage(payload, response.status)), { code: payload.code || `marina_http_${response.status}`, status: response.status, auth: response.status === 401 || response.status === 403, conflict: response.status === 409 });
     return payload;
@@ -390,7 +421,7 @@ if (!window.marina) {
     const metadata = await marinaDiscover();
     const pair = await MarinaOAuth.createPkcePair();
     const state = MarinaOAuth.createState();
-    marinaPending = { codeVerifier: pair.codeVerifier, state };
+    marinaPending = { codeVerifier: pair.codeVerifier, state, generation: marinaAuthGeneration };
     const url = MarinaOAuth.buildAuthorizationUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: marinaBuildConfig.clientId, redirectUri: marinaBuildConfig.redirectUris.mobile, scopes: marinaBuildConfig.scopes, state, codeChallenge: pair.codeChallenge });
     await Browser.open({ url });
     return configuredState(false, true, currentSource);
@@ -401,37 +432,55 @@ if (!window.marina) {
     const callback = MarinaOAuth.parseCallbackUrl(url, { protocol: "ro.marinapark.booking.mobile:", pathname: "/callback" });
     MarinaOAuth.validateState(marinaPending.state, callback.state);
     const verifier = marinaPending.codeVerifier;
+    const generation = marinaPending.generation;
     marinaPending = null;
-    await marinaTokenRequest({ grant_type: "authorization_code", client_id: marinaBuildConfig.clientId, code: callback.code, redirect_uri: marinaBuildConfig.redirectUris.mobile, code_verifier: verifier });
+    await marinaTokenRequest({ grant_type: "authorization_code", client_id: marinaBuildConfig.clientId, code: callback.code, redirect_uri: marinaBuildConfig.redirectUris.mobile, code_verifier: verifier }, generation);
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
     await Browser.close();
     for (const source of SOURCES) rememberConnection(source, true, false);
     if (currentRange) emit(await refresh(currentRange));
   }
 
   async function disconnectMarina() {
-    const refreshToken = String(await SecureStorage.get(MARINA_REFRESH_TOKEN_KEY) || "");
+    const generation = ++marinaAuthGeneration;
+    marinaAccessToken = "";
+    marinaAccessExpiresAt = 0;
+    marinaPending = null;
+    marinaRefreshTokenKnown = false;
+    marinaMutationOperations.clear();
+    for (const source of SOURCES) marinaRefreshSequences.set(source, (marinaRefreshSequences.get(source) || 0) + 1);
+    const refreshToken = await readMarinaRefreshToken();
+    let revocationError = null;
     try {
       if (refreshToken) {
         const metadata = await marinaDiscover();
         await CapacitorHttp.post({ url: metadata.revocationEndpoint, headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" }, data: MarinaOAuth.formBody({ token: refreshToken, token_type_hint: "refresh_token", client_id: marinaBuildConfig.clientId }) });
       }
+    } catch (error) {
+      revocationError = error;
     } finally {
-      marinaAccessToken = "";
-      marinaAccessExpiresAt = 0;
-      marinaPending = null;
-      await SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY);
+      await serializeSecureTokenWrite(() => SecureStorage.remove(MARINA_REFRESH_TOKEN_KEY));
       marinaRefreshTokenKnown = false;
       marinaNoteOverrides.clear();
       marinaManualDepositOverrides.clear();
       marinaOverridesHydration.clear();
       marinaWorkspaceResolutions.clear();
+      marinaNoteRequests.clear();
+      quoteCache.clear();
+      marinaMetadata = null;
       marinaWorkspaceIds.set("rooms", marinaBuildConfig.workspaceIds.rooms);
       marinaWorkspaceIds.set("camping", marinaBuildConfig.workspaceIds.camping);
-      await writeJson(CACHE_KEY, defaultCache());
+      await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+        const cleared = defaultCache();
+        cache.rooms = cleared.rooms;
+        cache.camping = cleared.camping;
+      });
       for (const source of SOURCES) rememberConnection(source, false, true);
     }
-    const next = await configuredState(false, true, currentSource);
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
+    const next = await configuredState(false, true, currentSource, marinaRanges.get(currentSource) || currentRange);
     emit(next);
+    if (revocationError) console.error("Marina token revocation failed during local logout:", revocationError.code || revocationError.message);
     return next;
   }
 
@@ -463,7 +512,7 @@ if (!window.marina) {
     if (result?.url) handleAppUrl(result.url);
   }).catch((error) => console.error("Mobile launch URL could not be read:", error));
 
-  function stateFrom(cache, settings, online = false, authPaused = false, source = currentSource) {
+  function stateFrom(cache, settings, online = false, authPaused = false, source = currentSource, range = marinaRanges.get(source) || currentRange) {
     const sourceCache = cache[source] || defaultCache()[source];
     const sourceSettings = settings[source] || defaultSettings()[source];
     return {
@@ -476,13 +525,14 @@ if (!window.marina) {
         lastSuccessfulSync: sourceCache.updatedAt || null
       },
       settings: sourceSettings,
-      range: currentRange
+      range: range ? { ...range } : null,
+      source
     };
   }
 
-  async function configuredState(online = false, authPaused = false, source = currentSource) {
+  async function configuredState(online = false, authPaused = false, source = currentSource, range = marinaRanges.get(source) || currentRange) {
     const [settings, cache] = await Promise.all([allSettings(), allCache()]);
-    const result = stateFrom(cache, settings, online, authPaused, source);
+    const result = stateFrom(cache, settings, online, authPaused, source, range);
     const connected = Boolean(marinaAccessToken || await hasMarinaRefreshToken());
     const capabilities = MarinaConfig.capabilities(marinaEffectiveScopes);
     result.settings = {
@@ -538,11 +588,13 @@ if (!window.marina) {
   }
 
   function normalizeMarinaResource(resource) {
+    const providerId = String(resource?.id ?? resource?.resource_id ?? "").trim();
+    if (!providerId) throw MarinaSyncResponse.invalidResponse("resurse");
     return {
-      id: marinaUiId(resource.id),
+      id: marinaUiId(providerId),
       provider: "marina",
-      providerId: String(resource.id),
-      title: String(resource.title || resource.name || `Marina ${resource.id}`),
+      providerId,
+      title: String(resource.title || resource.name || `Marina ${providerId}`),
       capacity: Number(resource.capacity) || null,
       capacityMode: String(resource.capacity_mode ?? resource.capacityMode ?? "exclusive"),
       capacityUnitMode: String(resource.capacity_unit_mode ?? resource.capacityUnitMode ?? "per_booking"),
@@ -661,27 +713,42 @@ if (!window.marina) {
     return request;
   }
 
-  async function refresh(range) {
-    if (marinaRefreshInFlight) return marinaRefreshInFlight;
-    marinaRefreshInFlight = refreshOnce(range);
-    try { return await marinaRefreshInFlight; } finally { marinaRefreshInFlight = null; }
+  async function refresh(range, { force = false } = {}) {
+    return refreshFor(currentSource, range, { force });
   }
 
-  async function refreshOnce(range) {
-    currentRange = range;
-    const source = currentSource;
+  async function refreshFor(source, range, { force = false } = {}) {
+    const capturedRange = { ...range };
+    currentRange = capturedRange;
+    marinaRanges.set(source, capturedRange);
+    const generation = marinaAuthGeneration;
+    const key = JSON.stringify([source, capturedRange.start, capturedRange.end, generation]);
+    if (!force && marinaRefreshInFlight.has(key)) return marinaRefreshInFlight.get(key);
+    const sequence = (marinaRefreshSequences.get(source) || 0) + 1;
+    marinaRefreshSequences.set(source, sequence);
+    const request = refreshOnce({ source, range: capturedRange, generation, sequence });
+    marinaRefreshInFlight.set(key, request);
+    try { return await request; }
+    finally { if (marinaRefreshInFlight.get(key) === request) marinaRefreshInFlight.delete(key); }
+  }
+
+  async function refreshOnce({ source, range, generation, sequence }) {
+    const isCurrent = () => generation === marinaAuthGeneration && sequence === marinaRefreshSequences.get(source);
+    const superseded = () => Object.assign(new Error("Sincronizarea Marina a fost înlocuită de o cerere mai nouă."), { code: "marina_refresh_superseded", temporary: true });
     await ensureMarinaOverrides(source);
+    if (!isCurrent()) throw superseded();
     const connected = Boolean(marinaAccessToken || await hasMarinaRefreshToken());
-    if (!connected) return configuredState(false, true, source);
+    if (!connected) return configuredState(false, true, source, range);
     try {
-      if (!MarinaConfig.capabilities(marinaEffectiveScopes).resourcesRead) return configuredState(true, false, source);
+      if (!MarinaConfig.capabilities(marinaEffectiveScopes).resourcesRead) return configuredState(true, false, source, range);
       const resourcePayload = await marinaRequest("/v1/resources", { source });
-      const resourceRows = Array.isArray(resourcePayload?.data) ? resourcePayload.data : Array.isArray(resourcePayload?.resources) ? resourcePayload.resources : Array.isArray(resourcePayload) ? resourcePayload : [];
-      const resources = orderMarinaResources(resourceRows.map(normalizeMarinaResource), { ignoreLegacy32: source !== "camping" });
+      const resourceRows = MarinaSyncResponse.collection(resourcePayload, ["resources"], "resurse");
+      const resources = orderMarinaResources(resourceRows.map(normalizeMarinaResource).map((item) => MarinaSyncResponse.validateRecord(item, "resurse")), { ignoreLegacy32: source !== "camping" });
       const facilityPayload = await marinaRequest("/v1/facilities", { source });
-      const facilityRows = Array.isArray(facilityPayload?.data) ? facilityPayload.data : Array.isArray(facilityPayload?.facilities) ? facilityPayload.facilities : Array.isArray(facilityPayload) ? facilityPayload : [];
-      const facilities = facilityRows.map(normalizeMarinaFacility);
+      const facilityRows = MarinaSyncResponse.collection(facilityPayload, ["facilities"], "facilități");
+      const facilities = facilityRows.map(normalizeMarinaFacility).map((item) => MarinaSyncResponse.validateRecord(item, "facilități"));
       const bookings = [];
+      const clearedOverrideKeys = [];
       let after = "";
       if (MarinaConfig.capabilities(marinaEffectiveScopes).bookingsRead) {
         const previousBookings = new Map((((await allCache())[source]?.bookings) || []).map((booking) => [booking.providerId, booking]));
@@ -690,15 +757,15 @@ if (!window.marina) {
           const params = new URLSearchParams({ ...marinaBookingQueryRange(range), limit: "200" });
           if (after) params.set("after", after);
           const payload = await marinaRequest(`/v1/bookings?${params}`, { source });
-          const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.bookings) ? payload.bookings : Array.isArray(payload) ? payload : [];
+          const rows = MarinaSyncResponse.collection(payload, ["bookings"], "rezervări");
           for (const booking of rows) {
-            const normalized = normalizeMarinaBookingRecord(booking, resources);
+            const normalized = MarinaSyncResponse.validateRecord(normalizeMarinaBookingRecord(booking, resources), "rezervări");
             const previous = previousBookings.get(normalized.providerId);
             const overrideKey = marinaOverrideKey(source, normalized.providerId);
             if (marinaNoteOverrides.has(overrideKey)) {
               const override = marinaNoteOverrides.get(overrideKey);
               const responseHasNote = Object.prototype.hasOwnProperty.call(booking || {}, "internal_note") || Object.prototype.hasOwnProperty.call(booking || {}, "note");
-              if (responseHasNote && normalized.note === override) marinaNoteOverrides.delete(overrideKey);
+              if (responseHasNote && normalized.note === override) clearedOverrideKeys.push([overrideKey, override]);
               else normalized.note = override;
             } else if (!normalized.note && previous?.note) normalized.note = previous.note;
             bookings.push(normalized);
@@ -707,29 +774,35 @@ if (!window.marina) {
           if (after && ++pages > 50) throw Object.assign(new Error("Sincronizarea Marina a întâlnit prea multe pagini de rezervări."), { code: "marina_sync_page_limit", temporary: true });
         } while (after);
       }
+      if (!isCurrent()) throw superseded();
       await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+        if (!isCurrent()) throw superseded();
         cache[source] = { ...marinaWorkspaceCache(source), resources, facilities, bookings, updatedAt: new Date().toISOString() };
+        for (const [key, expected] of clearedOverrideKeys) if (marinaNoteOverrides.get(key) === expected) marinaNoteOverrides.delete(key);
         storeMarinaOverrides(cache, source);
       });
+      if (!isCurrent()) throw superseded();
       rememberConnection(source, true, false);
-      const next = await configuredState(true, false, source);
-      emit(next);
+      const next = await configuredState(true, false, source, range);
+      if (currentSource === source && isCurrent()) emit(next);
       return next;
     } catch (error) {
+      if (error?.code === "marina_refresh_superseded" || !isCurrent()) throw superseded();
       rememberConnection(source, Boolean(error.auth), Boolean(error.auth));
-      const cached = await configuredState(Boolean(error.auth), Boolean(error.auth), source);
-      emit(cached);
+      const cached = await configuredState(Boolean(error.auth), Boolean(error.auth), source, range);
+      if (currentSource === source) emit(cached);
       throw error;
     }
   }
 
   async function refreshIfConfigured({ force = false } = {}) {
-    if (!currentRange) return;
     const source = currentSource;
+    const range = marinaRanges.get(source) || currentRange;
+    if (!range) return;
     const connection = connectionFor(source);
     if (!force && connection.online && Date.now() - connection.lastSuccessfulAt < MOBILE_REFRESH_INTERVAL_MS) return;
     if (!marinaBuildConfig.configured || !await hasMarinaRefreshToken()) return;
-    try { await refresh(currentRange); } catch {}
+    try { await refreshFor(source, { ...range }, { force }); } catch {}
   }
 
   function startRefreshTimer() {
@@ -763,8 +836,9 @@ if (!window.marina) {
       version: booking.version
     };
   }
-  async function storeMarinaMutationBooking(rawBooking, options = {}, source = currentSource) {
+  async function storeMarinaMutationBooking(rawBooking, options = {}, source = currentSource, generation = marinaAuthGeneration) {
     await ensureMarinaOverrides(source);
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
     const cache = await allCache();
     const normalized = normalizeMarinaBookingRecord(rawBooking, cache[source].resources);
     const overrideKey = marinaOverrideKey(source, normalized.providerId);
@@ -778,6 +852,7 @@ if (!window.marina) {
       if (Number.isInteger(minor) && minor >= 0) marinaManualDepositOverrides.set(overrideKey, minor);
     }
     await mutateJson(CACHE_KEY, defaultCache, (nextCache) => {
+      if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
       const bookings = nextCache[source].bookings || [];
       const index = bookings.findIndex((booking) => booking.localId === normalized.localId);
       if (index === -1) bookings.push(normalized);
@@ -786,13 +861,15 @@ if (!window.marina) {
       nextCache[source].updatedAt = new Date().toISOString();
       storeMarinaOverrides(nextCache, source);
     });
+    if (generation !== marinaAuthGeneration) throw marinaSessionSuperseded();
     if (currentSource === source) emit(await configuredState(true, false, source));
     return normalized;
   }
-  function scheduleMarinaRefresh() {
-    if (!currentRange) return;
-    const range = { ...currentRange };
-    void refresh(range).catch(() => {});
+  function scheduleMarinaRefresh(source = currentSource) {
+    const range = marinaRanges.get(source) || currentRange;
+    if (!range) return;
+    const pending = [...marinaRefreshInFlight.entries()].filter(([key]) => JSON.parse(key)[0] === source).map(([, promise]) => promise);
+    void Promise.allSettled(pending).then(() => refreshFor(source, { ...range }, { force: true })).catch(() => {});
   }
   async function marinaProviderResourceId(resourceId, source = currentSource) {
     const resource = ((await allCache())[source]?.resources || []).find((item) => Number(item.id) === Number(resourceId));
@@ -802,32 +879,44 @@ if (!window.marina) {
     return providerId;
   }
   async function marinaMutation(path, body, { method = "POST", version, idempotencyKey, source = currentSource } = {}) {
-    const scope = idempotencyKey ? null : JSON.stringify([method, path, version ?? null, body]);
-    const headers = { "Idempotency-Key": idempotencyKey || marinaMutationKey(scope) };
-    if (version !== undefined && version !== null) headers["If-Match"] = String(version);
     const versionedBody = version !== undefined && version !== null && (method === "PATCH" || path.endsWith("/status"))
       ? { ...body, expected_version: Number(version) }
       : body;
     let result;
     try {
-      result = await marinaRequest(path, { method, body: versionedBody, headers, source });
+      const execute = (key, preparedBody) => marinaRequest(path, {
+        method,
+        body: preparedBody,
+        headers: {
+          "Idempotency-Key": key,
+          ...(version !== undefined && version !== null ? { "If-Match": String(version) } : {})
+        },
+        source
+      });
+      if (idempotencyKey) result = await execute(idempotencyKey, versionedBody);
+      else {
+        const scope = MarinaOperationRegistry.operationScope("mutation", source, { method, path, version: version ?? null, body: versionedBody }, []);
+        result = await marinaMutationOperations.run(scope, () => structuredClone(versionedBody), (preparedBody, key) => execute(key, preparedBody));
+      }
     } catch (error) {
-      settleMarinaMutationKey(scope, error);
       if (error?.status === 412) {
         const match = String(path).match(/\/bookings\/([^/]+)/);
         const bookingId = match ? decodeURIComponent(match[1]) : "";
+        let recovered = false;
         if (bookingId) {
-          try {
-            const freshPayload = await marinaRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`, { source });
-            const freshRecord = freshPayload?.data?.booking || freshPayload?.data || freshPayload?.booking || freshPayload;
-            await storeMarinaMutationBooking(normalizeMarinaBookingRecord(freshRecord, ((await allCache())[source]?.resources) || []), {}, source);
-          } catch {}
+          recovered = await MarinaConflictRecovery.recoverBooking({
+            bookingId,
+            fetchBooking: (id) => marinaRequest(`/v1/bookings/${encodeURIComponent(id)}`, { source }),
+            storeBooking: (record) => storeMarinaMutationBooking(record, {}, source)
+          });
         }
-        throw Object.assign(new Error("Rezervarea Marina s-a schimbat între timp. Datele actualizate au fost încărcate; verificați din nou valorile înainte de salvare."), error, { code: "marina_stale_version", conflict: true, permanent: true });
+        const message = recovered
+          ? "Rezervarea Marina s-a schimbat între timp. Datele actualizate au fost încărcate; verificați din nou valorile înainte de salvare."
+          : "Rezervarea Marina s-a schimbat între timp, dar cele mai noi date nu au putut fi încărcate. Datele existente au fost păstrate; reîncarcă înainte de salvare.";
+        throw Object.assign(new Error(message), error, { code: "marina_stale_version", conflict: true, permanent: true, recoveryFailed: !recovered });
       }
       throw error;
     }
-    settleMarinaMutationKey(scope, null);
     return result?.data?.booking || result?.data || result?.booking || result;
   }
   async function marinaQuoteBody(input, source = currentSource) {
@@ -886,12 +975,14 @@ if (!window.marina) {
     setSource(source) {
       if (!SOURCES.has(source)) throw new TypeError("Sursa rezervărilor este invalidă.");
       currentSource = source;
+      currentRange = marinaRanges.get(source) || currentRange;
     },
     async bootstrap(range) {
       checkForMobileUpdateOnce();
       currentRange = range;
+      marinaRanges.set(currentSource, { ...range });
       const connection = connectionFor();
-      return configuredState(connection.online, connection.authPaused);
+      return configuredState(connection.online, connection.authPaused, currentSource, range);
     },
     refresh,
     onReservationLink(callback) {
@@ -900,6 +991,7 @@ if (!window.marina) {
       return () => reservationLinkCallbacks.delete(callback);
     },
     async getBookingByProviderId(value, requestedSource = currentSource) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(requestedSource) ? requestedSource : currentSource;
       assertReadableSource(source);
       const bookingId = String(value || "").trim();
@@ -908,26 +1000,34 @@ if (!window.marina) {
       }
       let cache = await allCache();
       if (!(cache[source]?.resources || []).length) {
+        assertMarinaSession(generation);
         const resourcePayload = await marinaRequest("/v1/resources", { source });
+        assertMarinaSession(generation);
         const rows = Array.isArray(resourcePayload?.data) ? resourcePayload.data : Array.isArray(resourcePayload?.resources) ? resourcePayload.resources : Array.isArray(resourcePayload) ? resourcePayload : [];
         const resources = orderMarinaResources(rows.map(normalizeMarinaResource), { ignoreLegacy32: source !== "camping" });
         await mutateJson(CACHE_KEY, defaultCache, (nextCache) => {
+          assertMarinaSession(generation);
           nextCache[source].resources = resources;
           nextCache[source].updatedAt = new Date().toISOString();
         });
         cache = await allCache();
       }
+      assertMarinaSession(generation);
       const payload = await marinaRequest(`/v1/bookings/${encodeURIComponent(bookingId)}`, { source });
+      assertMarinaSession(generation);
       const record = payload?.data?.booking || payload?.data || payload?.booking || payload;
       if (!record || typeof record !== "object") throw Object.assign(new Error("API-ul Marina nu a returnat rezervarea solicitată."), { code: "marina_booking_missing", permanent: true });
-      return storeMarinaMutationBooking({ ...record, id: record.id ?? bookingId }, {}, source);
+      return storeMarinaMutationBooking({ ...record, id: record.id ?? bookingId }, {}, source, generation);
     },
     async getBooking(id) {
+      const generation = marinaAuthGeneration;
       const source = currentSource;
       await ensureMarinaOverrides(source);
       const cached = (await allCache())[source]?.bookings?.find((booking) => booking.localId === String(id)) || null;
       if (!cached) return cached;
+      assertMarinaSession(generation);
       const bookingPayload = await marinaRequest(`/v1/bookings/${encodeURIComponent(cached.providerId)}`, { source });
+      assertMarinaSession(generation);
       const record = bookingPayload?.data?.booking || bookingPayload?.data || bookingPayload?.booking || bookingPayload;
       const resources = (await allCache())[source].resources;
       const detailed = normalizeMarinaBookingRecord({ ...record, id: record?.id ?? cached.providerId }, resources);
@@ -952,6 +1052,7 @@ if (!window.marina) {
       });
       let merged = merge([]);
       await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+        assertMarinaSession(generation);
         cache[source].bookings = cache[source].bookings.map((booking) => booking.localId === merged.localId ? merged : booking);
         cache[source].updatedAt = new Date().toISOString();
         storeMarinaOverrides(cache, source);
@@ -962,6 +1063,7 @@ if (!window.marina) {
       if (withNotes.note !== merged.note) {
         merged = withNotes;
         await mutateJson(CACHE_KEY, defaultCache, (cache) => {
+          assertMarinaSession(generation);
           cache[source].bookings = cache[source].bookings.map((booking) => booking.localId === merged.localId ? merged : booking);
           cache[source].updatedAt = new Date().toISOString();
           storeMarinaOverrides(cache, source);
@@ -971,23 +1073,34 @@ if (!window.marina) {
       return merged;
     },
     async createBooking(input) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertWritableSource(source);
 
         if (!input.quoteId) throw Object.assign(new Error("Rezervarea Marina necesită o cotație confirmată."), { code: "marina_quote_required", permanent: true });
-        const quotePayload = await marinaRequest("/v1/quotes", { method: "POST", body: await marinaQuoteBody(input, source), source });
-        const finalQuote = normalizeMarinaQuote(quotePayload, { mode: "full" });
-        const body = await marinaBookingBody({ ...input, quoteId: finalQuote.quoteId }, source);
-        body.status = input.approved ? "approved" : "pending";
-        const created = await marinaMutation("/v1/bookings", body, { source });
+        const scope = MarinaOperationRegistry.operationScope("create", source, input);
+        const prepared = await marinaMutationOperations.run(scope, async () => {
+          const quoteBody = await marinaQuoteBody(input, source);
+          assertMarinaSession(generation);
+          const quotePayload = await marinaRequest("/v1/quotes", { method: "POST", body: quoteBody, source });
+          const finalQuote = normalizeMarinaQuote(quotePayload, { mode: "full" });
+          const body = await marinaBookingBody({ ...input, quoteId: finalQuote.quoteId }, source);
+          body.status = input.approved ? "approved" : "pending";
+          return body;
+        }, async (body, key) => {
+          assertMarinaSession(generation);
+          return { body, created: await marinaMutation("/v1/bookings", body, { idempotencyKey: key, source }) };
+        });
+        const { body, created } = prepared;
         const id = created?.id ?? created?.booking_id;
         const createdRecord = { ...body, ...created, id };
         if (!String(createdRecord.note || createdRecord.internal_note || "").trim() && body.internal_note) createdRecord.internal_note = body.internal_note;
-        const normalized = await storeMarinaMutationBooking(createdRecord, { noteOverride: body.internal_note }, source);
-        scheduleMarinaRefresh();
+        const normalized = await storeMarinaMutationBooking(createdRecord, { noteOverride: body.internal_note }, source, generation);
+        scheduleMarinaRefresh(source);
         return normalized;
     },
     async editBooking(id, patch) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
 
@@ -996,60 +1109,84 @@ if (!window.marina) {
         const merged = { ...booking, ...patch, formData: patch.formData || booking.formData, dates: patch.dates || booking.dates, facilityIds: patch.facilityIds ?? booking.facilityIds };
         const repricing = marinaPricingChanged(booking, merged);
         if (repricing && !patch.quoteId) throw Object.assign(new Error("Modificarea prețului Marina necesită o cotație nouă."), { code: "marina_quote_required", permanent: true });
-        const finalPatch = repricing
-          ? { ...patch, quoteId: normalizeMarinaQuote(await marinaRequest("/v1/quotes", { method: "POST", body: await marinaQuoteBody(merged, source), source }), { mode: "full" }).quoteId }
-          : patch;
-        const body = await marinaBookingPatchBody(booking, finalPatch, source);
-        const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, body, { method: "PATCH", version: booking.version, source });
+        let body;
+        let result;
+        if (repricing) {
+          const scope = MarinaOperationRegistry.operationScope("reprice", source, { bookingId: booking.providerId, version: booking.version, patch });
+          const prepared = await marinaMutationOperations.run(scope, async () => {
+            const quoteBody = await marinaQuoteBody(merged, source);
+            assertMarinaSession(generation);
+            const quoteId = normalizeMarinaQuote(await marinaRequest("/v1/quotes", { method: "POST", body: quoteBody, source }), { mode: "full" }).quoteId;
+            return marinaBookingPatchBody(booking, { ...patch, quoteId }, source);
+          }, async (preparedBody, key) => {
+            assertMarinaSession(generation);
+            return { body: preparedBody, result: await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, preparedBody, { method: "PATCH", version: booking.version, idempotencyKey: key, source }) };
+          });
+          body = prepared.body;
+          result = prepared.result;
+        } else {
+          body = await marinaBookingPatchBody(booking, patch, source);
+          assertMarinaSession(generation);
+          result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, body, { method: "PATCH", version: booking.version, source });
+        }
         const hasNoteMutation = Object.prototype.hasOwnProperty.call(body, "internal_note");
         const noteOverride = hasNoteMutation ? String(body.internal_note ?? "") : undefined;
-        const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...body, ...result, ...(hasNoteMutation ? { internal_note: noteOverride } : {}), id: booking.providerId }, hasNoteMutation ? { noteOverride } : {}, source);
-        scheduleMarinaRefresh();
+        const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...body, ...result, ...(hasNoteMutation ? { internal_note: noteOverride } : {}), id: booking.providerId }, hasNoteMutation ? { noteOverride } : {}, source, generation);
+        scheduleMarinaRefresh(source);
         return normalized;
     },
     setStatus: async (id, patch) => {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
       if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
+      assertMarinaSession(generation);
       const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}/status`, { status: patch.status, send_email: Boolean(patch.sendEmail) }, { version: booking.version, source });
-      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), status: patch.status, ...result, id: booking.providerId }, {}, source);
-      scheduleMarinaRefresh();
+      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), status: patch.status, ...result, id: booking.providerId }, {}, source, generation);
+      scheduleMarinaRefresh(source);
       return normalized;
     },
     setNote: async (id, patch) => {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
       if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
+      assertMarinaSession(generation);
       const note = String(patch.note ?? "");
       const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, { internal_note: note }, { method: "PATCH", version: booking.version, source });
-      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...(String(result?.id) === booking.providerId ? result : {}), internal_note: note, id: booking.providerId }, { noteOverride: note }, source);
-      scheduleMarinaRefresh();
+      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...(String(result?.id) === booking.providerId ? result : {}), internal_note: note, id: booking.providerId }, { noteOverride: note }, source, generation);
+      scheduleMarinaRefresh(source);
       return normalized;
     },
     setTrash: async (id, patch) => {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(patch?.source) ? patch.source : currentSource;
       assertWritableSource(source);
       const booking = await marinaCachedBooking(id, source);
       if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
+      assertMarinaSession(generation);
       const trashed = Boolean(patch.trashed);
       const status = trashed ? "cancelled" : "pending";
       const action = trashed ? "cancel" : "status";
       const send_email = Boolean(patch.sendEmail);
       const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}/${action}`, trashed ? { send_email } : { status, send_email }, { version: booking.version, source });
-      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), status, ...result, id: booking.providerId }, {}, source);
-      scheduleMarinaRefresh();
+      const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), status, ...result, id: booking.providerId }, {}, source, generation);
+      scheduleMarinaRefresh(source);
       return normalized;
     },
     async getPayment(id, input = {}) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertReadableSource(source);
 
         await ensureMarinaOverrides(source);
         const booking = await marinaCachedBooking(id, source);
         if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
+        assertMarinaSession(generation);
         const payload = await marinaRequest(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, { source });
+        assertMarinaSession(generation);
         const snapshot = normalizeMarinaPayment(payload, {
           bookingId: booking.providerId,
           fallbackNote: booking.note,
@@ -1069,15 +1206,18 @@ if (!window.marina) {
             if (Number.isFinite(snapshot.total)) snapshot.balance = Number((snapshot.total - deposit).toFixed(2));
           }
         }
+        assertMarinaSession(generation);
         return snapshot;
     },
     async updateDeposit(id, input) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertWritableSource(source);
 
         await ensureMarinaOverrides(source);
         const booking = await marinaCachedBooking(id, source);
         if (!booking) throw Object.assign(new Error("Rezervarea Marina nu există în cache."), { code: "marina_booking_missing", permanent: true });
+        assertMarinaSession(generation);
         const deposit = Number(input.deposit);
         const total = Number(input.total);
         if (!Number.isFinite(deposit) || !Number.isFinite(total) || deposit < 0 || total <= 0 || deposit > total) throw new Error("Avansul trebuie să fie între zero și costul rezervării.");
@@ -1085,10 +1225,11 @@ if (!window.marina) {
         const latestRecord = latestPayload?.data?.booking || latestPayload?.data || latestPayload?.booking || latestPayload || {};
         const depositMinor = Math.round(deposit * 100);
         if (!Number.isSafeInteger(depositMinor)) throw new Error("Avansul este prea mare.");
-        const overrideKey = marinaOverrideKey(source, booking.providerId);
-        const currentNote = String(marinaNoteOverrides.has(overrideKey)
-          ? marinaNoteOverrides.get(overrideKey)
-          : input.note ?? booking.note ?? "");
+        const responseHasNote = Object.prototype.hasOwnProperty.call(latestRecord, "internal_note") || Object.prototype.hasOwnProperty.call(latestRecord, "note");
+        const currentNote = responseHasNote
+          ? marinaNoteText(latestRecord)
+          : PricingNote.normalize(marinaJoinNoteValues(await fetchMarinaNotes(booking.providerId, source)));
+        assertMarinaSession(generation);
         const nextNote = PricingNote.update(currentNote, deposit, total).note;
         const body = { deposit_minor: depositMinor, send_email: false, internal_note: nextNote };
         const result = await marinaMutation(`/v1/bookings/${encodeURIComponent(booking.providerId)}`, body, { method: "PATCH", version: latestRecord.version ?? booking.version, source });
@@ -1114,17 +1255,19 @@ if (!window.marina) {
           ...updatedRecord,
           internal_note: returnedNote,
           id: booking.providerId
-        }, { noteOverride: returnedNote, manualDepositMinor: depositMinor }, source);
-        scheduleMarinaRefresh();
+        }, { noteOverride: returnedNote, manualDepositMinor: depositMinor }, source, generation);
+        scheduleMarinaRefresh(source);
         return { ...payment, booking_id: payment.booking_id ?? booking.providerId, deposit: payment.deposit ?? deposit, total: payment.total ?? total, note: normalized.note, localId: normalized.localId };
     },
     async requestPayment(id, input = {}) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertWritableSource(source);
 
         const booking = await marinaCachedBooking(id, source);
         const bookingId = input.bookingId ?? booking?.providerId;
         if (bookingId === undefined || bookingId === null || String(bookingId).trim() === "") throw Object.assign(new Error("Rezervarea nu are un ID Marina valid."), { code: "marina_booking_id_missing", permanent: true });
+        assertMarinaSession(generation);
         let result;
         try {
           result = await marinaMutation(`/v1/admin/bookings/${encodeURIComponent(bookingId)}/payment-request`, {
@@ -1138,23 +1281,31 @@ if (!window.marina) {
           }
           throw error;
         }
+        assertMarinaSession(generation);
         return result || { status: "queued", booking_id: Number(bookingId) || bookingId, event: "booking.payment_requested" };
     },
     checkAvailability(input) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertWritableSource(source);
       return (async () => {
         const period = marinaAvailabilityPeriod(input.dates);
         if (!period) throw Object.assign(new Error("Intervalul Marina este invalid."), { code: "marina_invalid_dates", permanent: true });
         const body = { resource_id: await marinaProviderResourceId(input.resourceId, source), periods: [period], units: 1 };
+        assertMarinaSession(generation);
         const payload = await marinaRequest("/v1/availability/check", { method: "POST", body, source });
+        assertMarinaSession(generation);
         return payload?.data && typeof payload.data === "object" ? payload.data : payload;
       })();
     },
     async quoteBooking(input) {
+      const generation = marinaAuthGeneration;
       const source = SOURCES.has(input?.source) ? input.source : currentSource;
       assertWritableSource(source);
-      const payload = await marinaRequest("/v1/quotes", { method: "POST", body: await marinaQuoteBody(input, source), source });
+      const body = await marinaQuoteBody(input, source);
+      assertMarinaSession(generation);
+      const payload = await marinaRequest("/v1/quotes", { method: "POST", body, source });
+      assertMarinaSession(generation);
       return normalizeMarinaQuote(payload, { mode: input.mode || "full" });
     },
     clearQuoteCache() { quoteCache.clear(); },

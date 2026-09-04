@@ -1045,23 +1045,28 @@ function syncRow(element, row, virtualized) {
   }
   for (const bar of existing.values()) if (bar.dataset.bookingId !== dragState?.booking.localId) bar.remove();
   element.classList.toggle("is-empty", row.layout.items.length === 0);
-  updateLabelShifts(element);
 }
 
-function updateLabelShifts(row) {
-  const bars = [...row.querySelectorAll(":scope > .timeline-bar")];
-  const byKey = new Map(bars.map((bar) => [bar.dataset.bookingId, bar]));
+function updateLabelShifts(rows = [...guestTimeline.querySelectorAll(":scope > .timeline-row")]) {
+  const rowBars = rows.map((row) => [...row.querySelectorAll(":scope > .timeline-bar")]);
+  const bars = rowBars.flat();
   bars.forEach((bar) => bar.style.setProperty("--timeline-label-shift", "0px"));
   bars.forEach((bar) => bar.querySelector(".timeline-bar-label")?.style.setProperty("--timeline-sticky-label-shift", "0px"));
-  const bounds = new Map(bars.map((bar) => [bar.dataset.bookingId, bar.querySelector(".timeline-bar-guest")?.getBoundingClientRect()]));
-  for (const bar of bars) {
-    const predecessor = byKey.get(bar.dataset.handoffPredecessorKey);
-    const previousBounds = bounds.get(bar.dataset.handoffPredecessorKey);
-    const currentBounds = bounds.get(bar.dataset.bookingId);
-    if (!predecessor || !previousBounds || !currentBounds || predecessor.style.gridRow !== bar.style.gridRow) continue;
-    const shift = Math.min(48, Math.max(12, Math.ceil((previousBounds.right - currentBounds.left) / cameraScale + 6)));
-    bar.style.setProperty("--timeline-label-shift", `${shift}px`);
+  const writes = [];
+  for (const currentBars of rowBars) {
+    const byKey = new Map(currentBars.map((bar) => [bar.dataset.bookingId, bar]));
+    const bounds = new Map(currentBars.map((bar) => [bar.dataset.bookingId, bar.querySelector(".timeline-bar-guest")?.getBoundingClientRect()]));
+    for (const bar of currentBars) {
+      const predecessor = byKey.get(bar.dataset.handoffPredecessorKey);
+      const previousBounds = bounds.get(bar.dataset.handoffPredecessorKey);
+      const currentBounds = bounds.get(bar.dataset.bookingId);
+      if (!predecessor || !previousBounds || !currentBounds || predecessor.style.gridRow !== bar.style.gridRow) continue;
+      writes.push([bar, Math.min(48, Math.max(12, Math.ceil((previousBounds.right - currentBounds.left) / cameraScale + 6)))]);
+    }
   }
+  const stickyMeasurements = cameraScale > 1.001 ? TimelineStickyLabels.measure({ viewport: cameraViewport, rows: guestTimeline, scale: cameraScale }) : [];
+  for (const [bar, shift] of writes) bar.style.setProperty("--timeline-label-shift", `${shift}px`);
+  TimelineStickyLabels.apply(stickyMeasurements);
 }
 
 function updateStickyReservationLabels() {
@@ -1098,7 +1103,8 @@ function renderVisibleRows(force = false) {
   elements.forEach((element, index) => {
     if (force || guestTimeline.children[index] !== element) guestTimeline.insertBefore(element, guestTimeline.children[index] || null);
   });
-  updateStickyReservationLabels();
+  timelineShell.classList.toggle("has-camera-scale", cameraScale > 1.001);
+  updateLabelShifts(elements);
 }
 
 function queueRowRender() {
@@ -1113,7 +1119,6 @@ function renderTimeline({ preserveScroll = true } = {}) {
   updateDateGridBackground();
   prepareRows();
   if (preserveScroll) { timelineShell.scrollLeft = left; timelineShell.scrollTop = top; lastScrollLeft = left; }
-  updateStickyReservationLabels();
 }
 
 function availabilityCellLabel(cell) {
@@ -1240,7 +1245,12 @@ function handleAvailabilityScroll() {
   });
 }
 
-function applyState(next) {
+function stateSnapshotMatches(next, source = activeWorkspace, range = currentRange()) {
+  return Boolean(next && next.source === source && next.range?.start === range.start && next.range?.end === range.end);
+}
+
+function applyState(next, source = activeWorkspace, range = currentRange()) {
+  if (!stateSnapshotMatches(next, source, range)) return false;
   state = next;
   updateWorkspaceUi();
   fillResourceSelects();
@@ -1261,6 +1271,7 @@ function applyState(next) {
       closeBookingOverlays();
     }
   }
+  return true;
 }
 
 function revealCreatedBooking(created, input, source = activeWorkspace) {
@@ -1322,9 +1333,10 @@ async function refreshRange({ resetScroll = false, force = false, quiet = false,
   renderScale();
   try {
     const next = await window.marina.refresh(range, { force });
-    if (activeWorkspace !== requestWorkspace || !rangeMatchesWindow(range)) return;
-    applyState(next);
+    if (activeWorkspace !== requestWorkspace || !rangeMatchesWindow(range) || !stateSnapshotMatches(next, requestWorkspace, range)) return;
+    applyState(next, requestWorkspace, range);
   } catch (error) {
+    if (error?.code === "marina_refresh_superseded" || error?.code === "marina_session_superseded") return;
     if (activeWorkspace !== requestWorkspace || !rangeMatchesWindow(range)) return;
     if (!quiet) showError(error);
     renderTimeline();
@@ -2506,7 +2518,6 @@ function recenterTimelineWindow(force = false) {
 
 function handleTimelineScroll() {
   dismissBookingMenu();
-  if (cameraScale > 1.001) updateStickyReservationLabels();
   const horizontal = Math.abs(timelineShell.scrollLeft - lastScrollLeft) >= 1;
   lastScrollLeft = timelineShell.scrollLeft;
   if (horizontal) recenterTimelineWindow();
@@ -3262,7 +3273,7 @@ window.addEventListener("resize", () => {
 });
 
 window.marina.onStateChanged((next) => {
-  applyState(next);
+  if (!applyState(next)) return;
   void processPendingReservationLink();
 });
 if (typeof window.marina.onReservationLink === "function") {

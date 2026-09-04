@@ -247,15 +247,19 @@ function registerIpc() {
   ipcMain.handle("saga-invoice-settings:get", () => getSagaInvoiceSettings());
   ipcMain.handle("saga-invoice-settings:save", (_event, input) => saveSagaInvoiceSettings(input));
   ipcMain.handle("saga-invoice:import", (_event, input) => importSagaInvoice(input));
-  ipcMain.handle("settings:clear", () => disconnectMarina());
+  ipcMain.handle("settings:clear", (_event, source) => disconnectMarina(source));
   ipcMain.handle("marina:connect", () => contexts.rooms.service.connect());
-  ipcMain.handle("marina:disconnect", () => disconnectMarina());
+  ipcMain.handle("marina:disconnect", (_event, source) => disconnectMarina(source));
 }
 
-async function disconnectMarina() {
-  let state = null;
-  for (const source of VALID_SOURCES) state = await contexts[source].service.disconnect();
-  return state;
+async function disconnectMarina(requestedSource = "rooms") {
+  let revocationError = null;
+  try { await contexts.rooms.oauth.disconnect(); }
+  catch (error) { revocationError = error; }
+  const states = new Map();
+  for (const source of VALID_SOURCES) states.set(source, contexts[source].service.clearSession());
+  if (revocationError) console.error("Marina token revocation failed during local logout:", revocationError.code || revocationError.message);
+  return states.get(VALID_SOURCES.has(requestedSource) ? requestedSource : "rooms");
 }
 
 function createMarinaWorkspaceContexts() {

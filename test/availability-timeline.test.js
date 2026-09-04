@@ -134,7 +134,7 @@ test("availability rerenders and refreshes preserve the horizontal anchor", () =
   assert.match(renderSource, /availabilityGrid\.scrollLeft = Math\.max\(0, previousLeft\)/);
   assert.match(app, /const nextLeft = Math\.max\(0, oldLeft - actualDelta \* availabilityDayWidth\(\)\)/);
   assert.match(app, /renderAvailabilityTimeline\(\{ desiredLeft: nextLeft \}\)/);
-  assert.match(app, /function applyState\(next\)[\s\S]*renderAvailabilityTimeline\(\)/);
+  assert.match(app, /function applyState\(next,[\s\S]*renderAvailabilityTimeline\(\)/);
 });
 
 test("renderer initializes availability window dates and formatters without TDZ reference errors", () => {

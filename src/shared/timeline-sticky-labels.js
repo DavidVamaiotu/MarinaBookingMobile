@@ -20,19 +20,21 @@
     }
   }
 
-  function update({ viewport, rows, scale = 1, gap = 8 }) {
-    if (!viewport || !rows) return;
+  function measure({ viewport, rows, scale = 1, gap = 8 }) {
+    if (!viewport || !rows) return [];
     const labels = [...rows.querySelectorAll(".timeline-bar-label")];
-    reset(rows);
     const viewportRect = viewport.getBoundingClientRect();
+    const unitRights = new Map();
+    const measurements = [];
     for (const label of labels) {
       const bar = label.closest(".timeline-bar");
       if (!bar || bar.classList.contains("is-tight") || bar.classList.contains("is-compact")) continue;
-      const unit = bar.closest(".timeline-row")?.querySelector(".timeline-unit");
+      const row = bar.closest(".timeline-row");
       const guest = label.querySelector(".timeline-bar-guest") || label;
       const barRect = bar.getBoundingClientRect();
       const labelRect = guest.getBoundingClientRect();
-      const unitRight = unit?.getBoundingClientRect().right ?? viewportRect.left;
+      if (!unitRights.has(row)) unitRights.set(row, row?.querySelector(".timeline-unit")?.getBoundingClientRect().right ?? viewportRect.left);
+      const unitRight = unitRights.get(row);
       const visibleLeft = Math.max(viewportRect.left, unitRight) + gap * scale;
       const shift = boundedShift({
         visibleLeft,
@@ -41,9 +43,20 @@
         labelRight: labelRect.right,
         scale
       });
-      label.style.setProperty("--timeline-sticky-label-shift", `${shift}px`);
+      measurements.push({ label, shift });
     }
+    return measurements;
   }
 
-  return { boundedShift, reset, update };
+  function apply(measurements) {
+    for (const { label, shift } of measurements || []) label.style.setProperty("--timeline-sticky-label-shift", `${shift}px`);
+  }
+
+  function update(options) {
+    if (!options?.viewport || !options?.rows) return;
+    reset(options.rows);
+    apply(measure(options));
+  }
+
+  return { apply, boundedShift, measure, reset, update };
 });

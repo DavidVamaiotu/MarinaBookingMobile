@@ -6,6 +6,7 @@ class MarinaTokenStore {
   constructor({ database, safeStorage } = {}) {
     this.database = database;
     this.safeStorage = safeStorage;
+    this.writeChain = Promise.resolve();
   }
 
   assertSecureBackend() {
@@ -14,18 +15,27 @@ class MarinaTokenStore {
   }
 
   hasRefreshTokenSync() { return Boolean(this.database.getSecret(TOKEN_KEY)); }
-  async hasRefreshToken() { return this.hasRefreshTokenSync(); }
+  async hasRefreshToken() { await this.writeChain.catch(() => {}); return this.hasRefreshTokenSync(); }
   async setRefreshToken(token) {
-    this.assertSecureBackend();
-    this.database.setSecret(TOKEN_KEY, this.safeStorage.encryptString(String(token)));
+    return this.serializeWrite(() => {
+      this.assertSecureBackend();
+      this.database.setSecret(TOKEN_KEY, this.safeStorage.encryptString(String(token)));
+    });
   }
   async getRefreshToken() {
+    await this.writeChain.catch(() => {});
     const encrypted = this.database.getSecret(TOKEN_KEY);
     if (!encrypted) return "";
     this.assertSecureBackend();
     return this.safeStorage.decryptString(Buffer.from(encrypted));
   }
-  async clearRefreshToken() { this.database.deleteSecret(TOKEN_KEY); }
+  async clearRefreshToken() { return this.serializeWrite(() => this.database.deleteSecret(TOKEN_KEY)); }
+
+  serializeWrite(operation) {
+    const next = this.writeChain.catch(() => {}).then(operation);
+    this.writeChain = next;
+    return next.finally(() => { if (this.writeChain === next) this.writeChain = Promise.resolve(); });
+  }
 }
 
 module.exports = { MarinaTokenStore, TOKEN_KEY };

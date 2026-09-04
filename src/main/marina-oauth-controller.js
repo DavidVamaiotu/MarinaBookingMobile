@@ -24,6 +24,7 @@ class MarinaOAuthController extends EventEmitter {
     this.accessTokenExpiresAt = 0;
     this.effectiveScopes = [...config.scopes];
     this.refreshPromise = null;
+    this.authGeneration = 0;
   }
 
   endpoint(value, label) {
@@ -64,7 +65,8 @@ class MarinaOAuthController extends EventEmitter {
     const metadata = await this.discover();
     const { codeVerifier, codeChallenge } = await OAuth.createPkcePair({ cryptoImpl: this.cryptoImpl });
     const state = OAuth.createState(this.cryptoImpl);
-    this.pending = { codeVerifier, state };
+    const generation = this.authGeneration;
+    this.pending = { codeVerifier, state, generation };
     const authorizationUrl = OAuth.buildAuthorizationUrl({
       authorizationEndpoint: metadata.authorizationEndpoint,
       clientId: this.config.clientId,
@@ -100,6 +102,7 @@ class MarinaOAuthController extends EventEmitter {
     const callback = OAuth.parseCallbackUrl(value, { protocol: "ro.marinapark.booking.desktop:", pathname: "/callback" });
     OAuth.validateState(this.pending.state, callback.state);
     const codeVerifier = this.pending.codeVerifier;
+    const generation = this.pending.generation;
     this.pending = null;
     try {
       const payload = await this.tokenRequest({
@@ -109,25 +112,36 @@ class MarinaOAuthController extends EventEmitter {
         redirect_uri: this.config.redirectUris.desktop,
         code_verifier: codeVerifier
       });
-      await this.applyToken(payload);
+      await this.applyToken(payload, generation);
+      if (generation !== this.authGeneration) throw this.supersededError();
       this.emit("changed", this.status());
       return this.status();
     } catch (error) {
-      this.clearMemory();
-      this.emit("changed", this.status());
+      if (generation === this.authGeneration) {
+        this.clearMemory();
+        this.emit("changed", this.status());
+      }
       throw error;
     }
   }
 
-  async applyToken(payload) {
-    this.accessToken = String(payload.access_token);
+  async applyToken(payload, generation = this.authGeneration) {
+    const accessToken = String(payload.access_token);
     const expiresIn = Number(payload.expires_in);
     // OAuth2 requires expires_in; fall back to a conservative lifetime for
     // non-conformant endpoints instead of refreshing on every request.
-    this.accessTokenExpiresAt = this.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 300) * 1000;
-    if (payload.scope) this.effectiveScopes = MarinaConfig.normalizeScopes(payload.scope);
+    const accessTokenExpiresAt = this.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 300) * 1000;
+    const effectiveScopes = payload.scope ? MarinaConfig.normalizeScopes(payload.scope) : this.effectiveScopes;
+    if (generation !== this.authGeneration) throw this.supersededError();
     if (payload.refresh_token) await this.tokenStore.setRefreshToken(String(payload.refresh_token));
+    if (generation !== this.authGeneration) throw this.supersededError();
+    this.accessToken = accessToken;
+    this.accessTokenExpiresAt = accessTokenExpiresAt;
+    this.effectiveScopes = effectiveScopes;
   }
+
+  generation() { return this.authGeneration; }
+  supersededError() { return Object.assign(new Error("Sesiunea Marina s-a schimbat."), { code: "marina_session_superseded", temporary: true }); }
 
   clearMemory() {
     this.accessToken = "";
@@ -144,15 +158,18 @@ class MarinaOAuthController extends EventEmitter {
 
   async refresh() {
     if (this.refreshPromise) return this.refreshPromise;
-    this.refreshPromise = (async () => {
+    const generation = this.authGeneration;
+    const refreshPromise = (async () => {
       const refreshToken = await this.tokenStore.getRefreshToken();
       if (!refreshToken) throw Object.assign(new Error("Conectarea Marina este necesară."), { code: "marina_reconnect_required", auth: true, permanent: true });
       try {
         const payload = await this.tokenRequest({ grant_type: "refresh_token", client_id: this.config.clientId, refresh_token: refreshToken });
-        await this.applyToken(payload);
+        await this.applyToken(payload, generation);
+        if (generation !== this.authGeneration) throw this.supersededError();
         this.emit("changed", this.status());
         return this.accessToken;
       } catch (error) {
+        if (generation !== this.authGeneration) throw this.supersededError();
         this.clearMemory();
         // Network/discovery/server failures must not turn a temporary outage into
         // another interactive login. Clear only when OAuth definitively rejects
@@ -162,11 +179,16 @@ class MarinaOAuthController extends EventEmitter {
         throw error;
       }
     })();
-    try { return await this.refreshPromise; }
-    finally { this.refreshPromise = null; }
+    this.refreshPromise = refreshPromise;
+    try { return await refreshPromise; }
+    finally { if (this.refreshPromise === refreshPromise) this.refreshPromise = null; }
   }
 
   async disconnect() {
+    const generation = ++this.authGeneration;
+    this.clearMemory();
+    this.metadata = null;
+    this.emit("changed", this.status());
     const refreshToken = await this.tokenStore.getRefreshToken();
     try {
       if (refreshToken) {
@@ -180,9 +202,8 @@ class MarinaOAuthController extends EventEmitter {
         });
       }
     } finally {
-      this.clearMemory();
       await this.tokenStore.clearRefreshToken();
-      this.emit("changed", this.status());
+      if (generation === this.authGeneration) this.emit("changed", this.status());
     }
   }
 

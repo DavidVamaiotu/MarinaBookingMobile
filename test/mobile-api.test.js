@@ -90,10 +90,17 @@ test("mobile Camping keeps real resource metadata and sends creation email prefe
 });
 
 test("mobile Marina writes use versioning and keep payment email explicit", () => {
-  assert.match(bridgeSource, /headers\["If-Match"\] = String\(version\)/);
+  assert.match(bridgeSource, /"If-Match": String\(version\)/);
   assert.match(bridgeSource, /const body = \{ deposit_minor: depositMinor, send_email: false, internal_note: nextNote \}/);
   assert.match(bridgeSource, /\/v1\/admin\/bookings\/\$\{encodeURIComponent\(bookingId\)\}\/payment-request/);
   assert.match(bridgeSource, /send_email: true,[\s\S]*payment_type: "deposit",[\s\S]*payment_reason: "Avans rezervare"/);
+});
+
+test("mobile executes shared retry, strict sync, and conflict recovery behavior", () => {
+  assert.match(bridgeSource, /MarinaOperationRegistry\.createOperationRegistry/);
+  assert.match(bridgeSource, /MarinaSyncResponse\.collection\(resourcePayload/);
+  assert.match(bridgeSource, /MarinaConflictRecovery\.recoverBooking/);
+  assert.match(bridgeSource, /recoveryFailed: !recovered/);
 });
 
 test("mobile Marina trash actions use cancel and restore status routes", () => {
