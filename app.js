@@ -257,6 +257,7 @@ async function switchWorkspace(source) {
   clearTimeout(shiftRefreshTimer);
   shiftRefreshTimer = null;
   const switchId = ++workspaceSwitchId;
+  calendarRemoteOccupancy.clear();
   invalidateCalendarRequests();
   if (createDialog.open) createDialog.close();
   if (duplicateDialog.open) duplicateDialog.close();
@@ -345,6 +346,7 @@ const paymentSnapshots = new Map();
 const marinaPaymentRequestKeys = new Map();
 const paymentSnapshotErrors = new Map();
 const paymentSnapshotLoading = new Set();
+const calendarRemoteOccupancy = new Map();
 let availabilityTimer = null;
 let availabilityRequestId = 0;
 let availabilityState = "idle";
@@ -1277,6 +1279,7 @@ function stateSnapshotMatches(next, source = activeWorkspace, range = currentRan
 function applyState(next, source = activeWorkspace, range = currentRange()) {
   if (!stateSnapshotMatches(next, source, range)) return false;
   state = next;
+  calendarRemoteOccupancy.clear();
   updateWorkspaceUi();
   fillResourceSelects();
   updateTrashedToggle();
@@ -1292,8 +1295,8 @@ function applyState(next, source = activeWorkspace, range = currentRange()) {
     if (booking && selectedBookingView === "menu") populateBookingMenu(booking);
     else if (booking && selectedBookingView === "edit") populateDetails(booking, false);
     else if (booking && selectedBookingView === "payment") populatePaymentDialog(booking, false);
-    else if (!booking) {
-      closeBookingOverlays();
+    else if (!booking && selectedBookingView === "menu") {
+      dismissBookingMenu();
     }
   }
   return true;
@@ -1451,12 +1454,84 @@ function bookingFacilityCatalog(booking) {
   return [...(state.facilities || []), ...snapshots.filter((snapshot) => !(state.facilities || []).some((facility) => Number(facility.id) === Number(snapshot.id)))];
 }
 
+function calendarMonthKey(month) {
+  return `${month.getUTCFullYear()}-${String(month.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function dailyAvailabilityToOccupancy(days) {
+  const occupancy = {};
+  for (const day of Array.isArray(days) ? days : []) {
+    const date = String(day?.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const stateName = String(day?.state || "").toLowerCase();
+    const status = String(day?.booking_status || "").toLowerCase() === "pending" ? "pending" : "booked";
+    if (stateName === "available") occupancy[date] = { am: "available", pm: "available" };
+    else if (stateName === "check_in") occupancy[date] = { am: "available", pm: status };
+    else if (stateName === "check_out") occupancy[date] = { am: status, pm: "available" };
+    else if (stateName === "changeover") occupancy[date] = { am: "booked", pm: "booked" };
+    else if (stateName === "changeover_to_pending") occupancy[date] = { am: "booked", pm: "pending" };
+    else if (stateName === "changeover_from_pending") occupancy[date] = { am: "pending", pm: "booked" };
+    else if (stateName === "closed" || stateName === "booked" || day?.occupied || day?.available === false) {
+      const value = stateName === "closed" ? "booked" : status;
+      occupancy[date] = { am: value, pm: value };
+    }
+  }
+  return occupancy;
+}
+
+function monthNeedsRemoteOccupancy(month) {
+  if (activeWorkspace === "camping") return false;
+  const rangeStart = state.range?.start || "";
+  const rangeEnd = state.range?.end || "";
+  if (!rangeStart || !rangeEnd) return false;
+  return iso(month) < rangeStart || iso(monthEnd(month)) > rangeEnd;
+}
+
+function calendarMonthOccupancyEntry(resourceId, month) {
+  if (!resourceId || !monthNeedsRemoteOccupancy(month)) return { status: "local", occupancy: null };
+  const source = activeWorkspace;
+  const cacheKey = `${source}:${resourceId}:${calendarMonthKey(month)}`;
+  const existing = calendarRemoteOccupancy.get(cacheKey);
+  if (existing) return existing;
+  if (typeof window.marina?.getResourceDailyAvailability !== "function") return { status: "error", occupancy: null };
+  const entry = { status: "loading", occupancy: null };
+  calendarRemoteOccupancy.set(cacheKey, entry);
+  void window.marina.getResourceDailyAvailability({ resourceId, start: iso(month), end: iso(monthEnd(month)), source }).then((payload) => {
+    if (calendarRemoteOccupancy.get(cacheKey) !== entry) return;
+    entry.status = "loaded";
+    entry.occupancy = dailyAvailabilityToOccupancy(payload?.days);
+    if (source === activeWorkspace && (createDialog.open || editingDetails())) renderCreateCalendar();
+  }).catch(() => {
+    if (calendarRemoteOccupancy.get(cacheKey) !== entry) return;
+    entry.status = "error";
+    if (source === activeWorkspace && (createDialog.open || editingDetails())) renderCreateCalendar();
+  });
+  return entry;
+}
+
 function createOccupancy(form = calendarForm()) {
   if (activeWorkspace === "camping") return {};
+  const resourceId = Number(form.elements.resourceId.value);
+  const editedBooking = editingDetails() ? bookingById(selectedBookingId) : null;
   const bookings = editingDetails()
     ? state.bookings.filter((booking) => booking.localId !== selectedBookingId)
     : state.bookings;
-  return BookingCalendar.occupancyFor(bookings, Number(form.elements.resourceId.value));
+  const occupancy = BookingCalendar.occupancyFor(bookings, resourceId);
+  const rangeStart = state.range?.start || "";
+  const rangeEnd = state.range?.end || "";
+  const editedSameResourceDates = editedBooking && Number(editedBooking.resourceId) === resourceId
+    ? new Set((editedBooking.dates || []).map((value) => String(value).slice(0, 10)))
+    : null;
+  for (const month of [createCalendarMonth, addMonths(createCalendarMonth, 1)]) {
+    const entry = calendarMonthOccupancyEntry(resourceId, month);
+    if (entry.status !== "loaded" || !entry.occupancy) continue;
+    for (const [date, stateForDay] of Object.entries(entry.occupancy)) {
+      if (rangeStart && rangeEnd && date >= rangeStart && date <= rangeEnd) continue;
+      if (editedSameResourceDates?.has(date)) continue;
+      occupancy[date] = stateForDay;
+    }
+  }
+  return occupancy;
 }
 
 function setCreateAvailability(message, type = "") {
@@ -1616,9 +1691,10 @@ function updateCreateSubmitState() {
   const currentKey = currentQuoteKey(form);
   const marinaPricingChanged = editingDetails() && currentKey !== detailsInitialQuoteKey;
   const quoteRequired = !editingDetails() || marinaPricingChanged;
+  const savedBooking = editingDetails() ? bookingById(selectedBookingId) : null;
   const savedDetailsQuoteAvailable = editingDetails()
     && currentKey === detailsInitialQuoteKey
-    && Boolean(PricingNote.parse(form.elements.note.value));
+    && Boolean(bookingPriceSummary(savedBooking) || PricingNote.parse(form.elements.note.value));
   const currentQuoteAvailable = !quoteRequired || Boolean(createQuote?.valid && createQuoteKey === currentKey) || savedDetailsQuoteAvailable;
   if (editingDetails()) {
     form.querySelector('[type="submit"]').disabled = !createSelectionEnd
@@ -1695,10 +1771,13 @@ function createMonthHtml(month, position, occupancy) {
   const rangeEnd = state.range?.end || "9999-12-31";
   const editedBookingStart = editingDetails() ? bookingById(selectedBookingId)?.dates?.[0] : "";
   const earliestSelectable = editedBookingStart && editedBookingStart < today ? editedBookingStart : today;
-  const minMonth = monthStart(utcDate(earliestSelectable > rangeStart ? earliestSelectable : rangeStart));
-  const maxMonth = monthStart(addMonths(utcDate(rangeEnd), -1));
+  const minMonth = monthStart(utcDate(earliestSelectable));
+  const maxMonth = monthStart(addMonths(today, 23));
   const canGoBack = createCalendarMonth > minMonth;
   const canGoForward = createCalendarMonth < maxMonth;
+  const resourceId = Number(calendarForm().elements.resourceId.value);
+  const remoteEntry = calendarMonthOccupancyEntry(resourceId, month);
+  const remoteSuffix = remoteEntry.status === "loading" ? " · se încarcă…" : remoteEntry.status === "error" ? " · indisponibil" : "";
   const navigation = position === 0
     ? `<button class="calendar-nav previous" data-calendar-nav="-1" type="button" aria-label="Luna precedentă" ${canGoBack ? "" : "hidden"}>‹</button>`
     : `<button class="calendar-nav next" data-calendar-nav="1" type="button" aria-label="Luna următoare" ${canGoForward ? "" : "hidden"}>›</button>`;
@@ -1706,19 +1785,20 @@ function createMonthHtml(month, position, occupancy) {
     const dayNumber = index - firstOffset + 1;
     if (dayNumber < 1 || dayNumber > days) return '<span class="calendar-blank"></span>';
     const value = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-    const outside = value < rangeStart || value > rangeEnd;
+    const outsideRange = value < rangeStart || value > rangeEnd;
+    const unavailableRemote = outsideRange && activeWorkspace !== "camping" && remoteEntry.status !== "loaded";
     const past = value < today && !(editedBookingStart && value >= editedBookingStart);
     const occupied = occupancy[value] || { am: "available", pm: "available" };
-    const stateForDay = past ? { am: "available", pm: "available" } : { ...occupied };
+    const stateForDay = (past || unavailableRemote) ? { am: "available", pm: "available" } : { ...occupied };
     if (value === today) stateForDay.am = "available";
     const partial = stateForDay.am !== stateForDay.pm;
     const selected = createSelectionStart && value >= createSelectionStart && value <= (createSelectionEnd || createSelectionStart);
     const edge = value === createSelectionStart ? " selection-start" : value === createSelectionEnd ? " selection-end" : "";
-    const classes = `calendar-day${partial ? " is-partial" : ""}${past ? " is-past" : ""}${outside ? " is-outside" : ""}${selected ? " is-selected" : ""}${edge}`;
-    const status = partial ? "rezervat parțial" : stateForDay.am === "booked" ? "rezervat" : stateForDay.am === "pending" ? "în așteptare" : "disponibil";
-    return `<button class="${classes} am-${stateForDay.am} pm-${stateForDay.pm}" data-calendar-date="${value}" type="button" aria-label="${dayNumber} ${escapeHtml(calendarMonthLabel(month))}, ${status}" ${(past || outside) ? "disabled" : ""}><span>${dayNumber}</span></button>`;
+    const classes = `calendar-day${partial ? " is-partial" : ""}${past ? " is-past" : ""}${unavailableRemote ? " is-outside" : ""}${selected ? " is-selected" : ""}${edge}`;
+    const status = unavailableRemote ? "se încarcă disponibilitatea" : partial ? "rezervat parțial" : stateForDay.am === "booked" ? "rezervat" : stateForDay.am === "pending" ? "în așteptare" : "disponibil";
+    return `<button class="${classes} am-${stateForDay.am} pm-${stateForDay.pm}" data-calendar-date="${value}" type="button" aria-label="${dayNumber} ${escapeHtml(calendarMonthLabel(month))}, ${status}" ${(past || unavailableRemote) ? "disabled" : ""}><span>${dayNumber}</span></button>`;
   }).join("");
-  return `<article class="booking-month"><header>${navigation}<strong>${escapeHtml(calendarMonthLabel(month))}</strong></header><div class="calendar-weekdays">${CALENDAR_WEEKDAYS.map((day) => `<span>${day}</span>`).join("")}</div><div class="calendar-grid">${cells}</div></article>`;
+  return `<article class="booking-month"><header>${navigation}<strong>${escapeHtml(calendarMonthLabel(month))}${escapeHtml(remoteSuffix)}</strong></header><div class="calendar-weekdays">${CALENDAR_WEEKDAYS.map((day) => `<span>${day}</span>`).join("")}</div><div class="calendar-grid">${cells}</div></article>`;
 }
 
 function renderCreateCalendar() {
@@ -2297,7 +2377,8 @@ function populateDetails(booking, reset = true) {
     detailsPreferredSelection = { start: createSelectionStart, end: createSelectionEnd };
     createCalendarMonth = monthStart(utcDate(createSelectionStart || todayIso()));
     availabilityState = initialDates.valid ? "available" : "idle";
-    quoteState = initialDates.valid && PricingNote.parse(form.elements.note.value) ? "saved" : "stale";
+    const savedPrice = bookingPriceSummary(booking);
+    quoteState = initialDates.valid && (savedPrice || PricingNote.parse(form.elements.note.value)) ? "saved" : "stale";
     createQuote = null;
     createQuoteKey = "";
     detailsInitialQuoteKey = currentQuoteKey(form);
@@ -2309,24 +2390,45 @@ function populateDetails(booking, reset = true) {
     renderCreateCalendar();
     if (initialDates.valid && quoteState === "stale") schedulePriceCheck();
   }
-  renderDetailsPrice(createQuote?.valid ? createPricingNote(createQuote) : form.elements.note.value, createQuote);
+  renderDetailsPrice(createQuote?.valid ? createPricingNote(createQuote) : form.elements.note.value, createQuote, booking);
   const clientName = [BookingFields.value(booking, "firstName"), BookingFields.value(booking, "lastName")].filter(Boolean).join(" ").trim();
   $("#detailsTitle").textContent = clientName || `Rezervarea ${booking.serverId || "locală"}`;
   detailsPanel.hidden = false;
 }
 
-function renderDetailsPrice(note, quote = null) {
+function bookingPriceSummary(booking) {
+  const price = booking?.price;
+  if (!price || typeof price !== "object") return null;
+  const totalMinor = Number(price.total_minor ?? price.totalMinor);
+  const depositMinor = Number(price.deposit_minor ?? price.depositMinor);
+  if (!Number.isFinite(totalMinor) || !Number.isFinite(depositMinor) || totalMinor < 0 || depositMinor < 0) return null;
+  const balanceMinor = Number(price.balance_minor ?? price.balanceMinor);
+  const total = Math.round(totalMinor) / 100;
+  const deposit = Math.round(depositMinor) / 100;
+  const balance = Number.isFinite(balanceMinor) ? Math.round(balanceMinor) / 100 : Math.round((total - deposit) * 100) / 100;
+  return {
+    total,
+    deposit,
+    balance,
+    depositOverridden: Boolean(price.deposit_overridden ?? price.depositOverridden)
+  };
+}
+
+function renderDetailsPrice(note, quote = null, booking = bookingById(selectedBookingId)) {
   const marinaQuote = quote?.valid ? quote : null;
-  const pricing = marinaQuote ? null : PricingNote.parse(note);
+  const storedPrice = marinaQuote ? null : bookingPriceSummary(booking);
+  const pricing = marinaQuote || storedPrice ? null : PricingNote.parse(note);
   const values = marinaQuote
     ? [marinaQuote.total, marinaQuote.deposit, marinaQuote.balance].map((value) => `${formatCreateMoney(value).replace(/\s*lei$/i, "")} RON`)
-    : pricing
-      ? [pricing.total, pricing.deposit, pricing.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
-      : ["—", "—", "—"];
+    : storedPrice
+      ? [storedPrice.total, storedPrice.deposit, storedPrice.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
+      : pricing
+        ? [pricing.total, pricing.deposit, pricing.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
+        : ["—", "—", "—"];
   $("#detailsPriceTotal").textContent = values[0];
   $("#detailsPriceDeposit").textContent = values[1];
   $("#detailsPriceBalance").textContent = values[2];
-  $("#detailsPriceSummary").classList.toggle("is-unavailable", !pricing && !marinaQuote);
+  $("#detailsPriceSummary").classList.toggle("is-unavailable", !pricing && !storedPrice && !marinaQuote);
 }
 
 function populatePaymentDialog(booking, reset = true) {
@@ -2723,17 +2825,48 @@ async function saveBookingDetails(booking, form) {
     if (availabilityState !== "available") throw Object.assign(new Error("Disponibilitatea trebuie confirmată înainte de salvare."), { code: "availability_unconfirmed", permanent: true });
     const needsMarinaQuote = pricingChanged || replaceNoteAndDeposit;
     if (needsMarinaQuote && !await refreshPriceNow({ forceFresh: true })) return;
-    const recalculatedQuote = replaceNoteAndDeposit ? normalizedRecalculatedQuote(createQuote) : null;
-    const note = replaceNoteAndDeposit
-      ? recalculatedBookingNote(recalculatedQuote, form.elements.note.value)
-      : form.elements.note.value;
+    const recalculatedQuote = needsMarinaQuote ? normalizedRecalculatedQuote(createQuote) : null;
+    const savedPrice = typeof bookingPriceSummary === "function" ? bookingPriceSummary(booking) : null;
+    const hasOverriddenDeposit = Boolean(savedPrice?.depositOverridden);
+    let resetDepositOverride = false;
+    let preservedManualDepositNotice = false;
+    let note = form.elements.note.value;
+    if (pricingChanged) {
+      if (replaceNoteAndDeposit) {
+        resetDepositOverride = true;
+        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
+      } else if (hasOverriddenDeposit && savedPrice.deposit > recalculatedQuote.total) {
+        const accepted = confirm(
+          `Avansul salvat (${PricingNote.formatAmount(savedPrice.deposit)} lei) depășește noul cost total (${PricingNote.formatAmount(recalculatedQuote.total)} lei).\n\n` +
+          `Apasă OK pentru a salva cu noul avans calculat (${PricingNote.formatAmount(recalculatedQuote.deposit)} lei) și nota actualizată, sau Anulează pentru a modifica mai întâi avansul din Plată → Schimbă avansul.`
+        );
+        if (!accepted) {
+          if (typeof showToast === "function") showToast("Modifică avansul din Plată → Schimbă avansul înainte de a salva noul sejur.", "error");
+          return;
+        }
+        resetDepositOverride = true;
+        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
+      } else if (hasOverriddenDeposit) {
+        const balance = Math.round((recalculatedQuote.total - savedPrice.deposit) * 100) / 100;
+        note = recalculatedBookingNote({ ...recalculatedQuote, deposit: savedPrice.deposit, balance }, form.elements.note.value);
+        preservedManualDepositNotice = Math.abs(savedPrice.deposit - recalculatedQuote.deposit) >= 0.01;
+      } else {
+        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
+      }
+    } else if (replaceNoteAndDeposit) {
+      resetDepositOverride = true;
+      note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
+    }
     if (source !== activeWorkspace || selectedBookingId !== booking.localId) throw workspaceChangedError();
     const formData = detailsFormData(booking, form);
     const outboundFormData = BookingFields.prepareFormData(formData, booking.resourceId);
     const facilityIds = typeof selectedFacilityIds === "function" ? selectedFacilityIds(form) : (booking.facilityIds || []);
-    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source, facilityIds };
-    if (marina && pricingChanged && createQuote?.quoteId) editInput.quoteId = createQuote.quoteId;
+    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source, facilityIds, ...(resetDepositOverride ? { resetDepositOverride: true } : {}) };
+    if (marina && (pricingChanged || resetDepositOverride) && createQuote?.quoteId) editInput.quoteId = createQuote.quoteId;
     await runApiAction("editBooking", booking.localId, editInput);
+    if (preservedManualDepositNotice && typeof showToast === "function") {
+      showToast(`Avansul manual (${PricingNote.formatAmount(savedPrice.deposit)} lei) a fost păstrat. Îl poți modifica din Plată → Schimbă avansul.`, "success");
+    }
     if (marina && (pricingChanged || replaceNoteAndDeposit || String(note) !== String(booking.note || ""))) {
       paymentSnapshots.delete(booking.localId);
       paymentSnapshotErrors.delete(booking.localId);

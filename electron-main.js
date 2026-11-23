@@ -241,6 +241,15 @@ function registerIpc() {
       : validate.id(input.excludeBookingId, "excludeBookingId");
     return service.availability(resourceId, validate.availabilityDates(input.dates), { excludeBookingId });
   });
+  ipcMain.handle("booking:daily-availability", (_event, source, input) => {
+    assertReadableSource(source);
+    const { service } = contextFor(source);
+    input = validate.object(input);
+    const resourceId = Number(input.resourceId);
+    if (!Number.isInteger(resourceId) || resourceId < 1) throw new TypeError("resourceId trebuie să fie pozitiv.");
+    const period = validate.range({ start: input.start, end: input.end });
+    return service.dailyAvailability(resourceId, period.start, period.end);
+  });
   ipcMain.handle("booking:quote", (_event, source, input) => { assertWritableSource(source); return contextFor(source).service.quote(validate.quoteInput(input)); });
   ipcMain.handle("booking:quote-clear", (_event, source) => { assertWritableSource(source); return contextFor(source).service.clearQuoteCache(); });
   ipcMain.handle("settings:get", (_event, source) => contextFor(source).service.settings());

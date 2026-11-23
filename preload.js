@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("marina", Object.freeze({
   updateDeposit: (id, input) => invoke("booking:deposit", sourceFor(input), id, input),
   requestPayment: (id, input) => invoke("booking:payment-request", sourceFor(input), id, input),
   checkAvailability: (input) => invoke("booking:availability", sourceFor(input), input),
+  getResourceDailyAvailability: (input) => invoke("booking:daily-availability", sourceFor(input), input),
   quoteBooking: (input) => invoke("booking:quote", sourceFor(input), input),
   clearQuoteCache: () => invoke("booking:quote-clear", currentSource),
   getSettings: (source = currentSource) => invoke("settings:get", sources.has(source) ? source : currentSource),

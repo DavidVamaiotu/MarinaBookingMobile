@@ -107,6 +107,7 @@ function bookingPatch(value) {
   if (value.facilityIds !== undefined) result.facilityIds = facilityIds(value.facilityIds);
   if (value.bookingFormType !== undefined) result.bookingFormType = text(value.bookingFormType, "bookingFormType", 80);
   if (value.quoteId !== undefined) result.quoteId = text(value.quoteId, "quoteId", 200);
+  if (value.resetDepositOverride !== undefined) result.resetDepositOverride = Boolean(value.resetDepositOverride);
   if (value.status !== undefined) {
     result.status = text(value.status, "status", 20, true);
     if (!["approved", "pending"].includes(result.status)) throw new TypeError("status trebuie să fie approved sau pending.");

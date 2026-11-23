@@ -34,6 +34,7 @@ test("typed IPC validators reject malformed booking intent", () => {
   assert.equal(validate.bookingInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } } }).resourceId, 4);
   assert.deepEqual(validate.quoteInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } }, facilityIds: [7, 4] }).facilityIds, [4, 7]);
   assert.deepEqual(validate.bookingPatch({ facilityIds: [] }).facilityIds, []);
+  assert.equal(validate.bookingPatch({ resetDepositOverride: true }).resetDepositOverride, true);
   assert.throws(() => validate.bookingInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } }, facilityIds: [4, 4] }), /duplicate/);
 });
 

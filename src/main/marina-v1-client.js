@@ -218,6 +218,7 @@ class MarinaV1ApiClient {
   pricing(id, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}/pricing`, options); }
   putPricing(id, body, idempotencyKey, options = {}) { return this.request(`/v1/resources/${encodeURIComponent(id)}/pricing`, { ...options, method: "PUT", body, idempotencyKey }); }
   calendar(id, from, to, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}/calendar?${queryString({ from, to })}`, options); }
+  dailyAvailability(id, from, to, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}/availability/days?${queryString({ from, to })}`, options); }
   closures(id, options) { return this.request(`/v1/resources/${encodeURIComponent(id)}/closures`, options); }
   availabilityCheck(body, options = {}) { return this.request("/v1/availability/check", { ...options, method: "POST", body: bookingRequestBody(body) }); }
   availabilityResources(from, to, options) { return this.request(`/v1/availability/resources?${queryString({ from, to })}`, options); }

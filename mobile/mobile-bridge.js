@@ -997,6 +997,10 @@ if (!window.marina) {
       body.facility_ids = quote.facility_ids;
       if (patch.quoteId) body.quote_id = String(patch.quoteId);
     }
+    if (patch.resetDepositOverride) {
+      body.reset_deposit_override = true;
+      if (patch.quoteId) body.quote_id = String(patch.quoteId);
+    }
     const previousCustomer = customerFromFormData(current.formData);
     const nextCustomer = customerFromFormData(merged.formData);
     if (JSON.stringify(previousCustomer) !== JSON.stringify(nextCustomer)) body.customer = nextCustomer;
@@ -1171,6 +1175,7 @@ if (!window.marina) {
         }
         const hasNoteMutation = Object.prototype.hasOwnProperty.call(body, "internal_note");
         const noteOverride = hasNoteMutation ? String(body.internal_note ?? "") : undefined;
+        if (body.reset_deposit_override) marinaManualDepositOverrides.delete(marinaOverrideKey(source, booking.providerId));
         const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...body, ...result, ...(hasNoteMutation ? { internal_note: noteOverride } : {}), id: booking.providerId }, hasNoteMutation ? { noteOverride } : {}, source, generation);
         scheduleMarinaRefresh(source);
         return normalized;
@@ -1340,6 +1345,17 @@ if (!window.marina) {
         assertMarinaSession(generation);
         return payload?.data && typeof payload.data === "object" ? payload.data : payload;
       })();
+    },
+    async getResourceDailyAvailability(input) {
+      const generation = marinaAuthGeneration;
+      const source = SOURCES.has(input?.source) ? input.source : currentSource;
+      assertReadableSource(source);
+      const providerResourceId = await marinaProviderResourceId(input.resourceId, source);
+      const params = new URLSearchParams({ from: String(input.start || "").slice(0, 10), to: String(input.end || "").slice(0, 10) });
+      assertMarinaSession(generation);
+      const payload = await marinaRequest(`/v1/resources/${encodeURIComponent(providerResourceId)}/availability/days?${params}`, { source });
+      assertMarinaSession(generation);
+      return payload?.data && typeof payload.data === "object" ? payload.data : payload;
     },
     async quoteBooking(input) {
       const generation = marinaAuthGeneration;

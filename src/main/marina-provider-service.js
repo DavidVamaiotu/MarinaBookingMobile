@@ -368,6 +368,10 @@ function bookingPatchBody(current, patch, resources) {
     body.facility_ids = quote.facility_ids;
     if (patch.quoteId) body.quote_id = String(patch.quoteId);
   }
+  if (patch.resetDepositOverride) {
+    body.reset_deposit_override = true;
+    if (patch.quoteId) body.quote_id = String(patch.quoteId);
+  }
   const previousCustomer = customerFromFormData(current.formData);
   const nextCustomer = customerFromFormData(merged.formData);
   if (JSON.stringify(previousCustomer) !== JSON.stringify(nextCustomer)) body.customer = nextCustomer;
@@ -835,6 +839,7 @@ class MarinaBookingProvider extends EventEmitter {
     const authoritative = returnedId !== undefined && String(returnedId) === booking.providerId ? returned : {};
     const hasNoteMutation = Object.prototype.hasOwnProperty.call(mutationBody || {}, "internal_note");
     const noteOverride = hasNoteMutation ? String(mutationBody.internal_note ?? "") : undefined;
+    if (mutationBody?.reset_deposit_override) this.manualDepositOverrides.delete(booking.providerId);
     const normalized = this.storeMutationBooking(normalizeBooking({
       ...this.bookingSnapshot(booking),
       ...mutationBody,
@@ -852,6 +857,12 @@ class MarinaBookingProvider extends EventEmitter {
     const period = stayAvailabilityPeriod(dates);
     const body = { resource_id: numericProviderResourceId(resource), periods: [period], units: 1 };
     const response = await this.api.availabilityCheck(body);
+    return entity(response.payload);
+  }
+
+  async dailyAvailability(resourceId, from, to) {
+    const resource = this.resources.find((item) => Number(item.id) === Number(resourceId));
+    const response = await this.api.dailyAvailability(numericProviderResourceId(resource), from, to);
     return entity(response.payload);
   }
 

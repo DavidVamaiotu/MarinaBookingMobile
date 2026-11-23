@@ -440,15 +440,19 @@ function saveHarness({
   failEdit = false,
   failDeposit = false,
   confirmedNote,
-  note = "Nota veche fără preț"
+  note = "Nota veche fără preț",
+  price = null,
+  confirmResult = true
 } = {}) {
   const calls = [];
   const events = [];
   const refreshCalls = [];
+  const prompts = [];
+  const toasts = [];
   const paymentSnapshots = new Map([["booking-1", { deposit: 50 }]]);
   const paymentSnapshotErrors = new Map([["booking-1", new Error("old")]]);
   let closeCount = 0;
-  const booking = { localId: "booking-1", resourceId: 2 };
+  const booking = { localId: "booking-1", resourceId: 2, ...(price ? { price } : {}) };
   const form = {
     elements: {
       resourceId: { value: "3" },
@@ -461,7 +465,7 @@ function saveHarness({
     querySelector() { return { disabled: false }; }
   };
   const saveBookingDetails = evaluate(
-    ["normalizedRecalculatedQuote", "recalculatedBookingNote", "saveBookingDetails"],
+    ["bookingPriceSummary", "normalizedRecalculatedQuote", "recalculatedBookingNote", "saveBookingDetails"],
     "saveBookingDetails",
     {
       PricingNote,
@@ -470,9 +474,11 @@ function saveHarness({
       selectedBookingView: "edit",
       availabilityState: "available",
       detailsInitialQuoteKey: "old-key",
-      createQuote: { valid: true, total: 225, deposit: 75, balance: 150 },
+      createQuote: { valid: true, quoteId: "q_recalc", total: 225, deposit: 75, balance: 150 },
       paymentSnapshots,
       paymentSnapshotErrors,
+      confirm(message) { prompts.push(message); return confirmResult; },
+      showToast(message, state) { toasts.push({ message, state }); },
       runExclusive: async (_key, _controls, action) => action(),
       resourceById: () => ({ defaultForm: "standard" }),
       rangeDates: () => ["2026-08-04", "2026-08-05", "2026-08-06"],
@@ -494,27 +500,99 @@ function saveHarness({
       closeBookingOverlays() { events.push("close"); closeCount += 1; }
     }
   );
-  return { booking, form, saveBookingDetails, calls, events, refreshCalls, paymentSnapshots, paymentSnapshotErrors, closeCount: () => closeCount };
+  return { booking, form, saveBookingDetails, calls, events, refreshCalls, prompts, toasts, paymentSnapshots, paymentSnapshotErrors, closeCount: () => closeCount };
 }
 
-test("save preserves the old note and deposit when preservation is checked", async () => {
+test("repricing updates the note to reflect the actual new price even when preservation is checked", async () => {
   const preserving = saveHarness();
   await preserving.saveBookingDetails(preserving.booking, preserving.form);
   assert.equal(JSON.stringify(preserving.refreshCalls), JSON.stringify([{ forceFresh: true }]));
   assert.equal(preserving.calls.length, 1);
   assert.equal(preserving.calls[0][0], "editBooking");
-  assert.equal(preserving.calls[0][2].note, "Nota veche fără preț");
+  assert.equal(preserving.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
+  assert.equal(preserving.calls[0][2].resetDepositOverride, undefined);
   assert.deepEqual(preserving.events, ["editBooking", "close"]);
   assert.equal(preserving.closeCount(), 1);
 });
 
-test("save persists the newly quoted Marina note when preservation is unchecked", async () => {
+test("repricing with a manual deposit that fits keeps the manual deposit in both DB and note", async () => {
+  const harness = saveHarness({
+    keepSavedNoteAndDeposit: true,
+    pricingChanged: true,
+    note: "Client fidel\nCost total: 400 RON, Depozit: 100 RON, Rest: 300 RON",
+    price: { total_minor: 40000, deposit_minor: 10000, balance_minor: 30000, deposit_overridden: true }
+  });
+  await harness.saveBookingDetails(harness.booking, harness.form);
+  assert.equal(harness.calls[0][2].note, "Client fidel\nCost total: 225 RON, Depozit: 100 RON, Rest: 125 RON");
+  assert.equal(harness.calls[0][2].resetDepositOverride, undefined);
+  assert.equal(harness.toasts.length, 1);
+  assert.match(harness.toasts[0].message, /Avansul manual \(100 lei\) a fost păstrat/);
+});
+
+test("repricing when a manual deposit exceeds the new total prompts before resetting or aborting", async () => {
+  const cancelled = saveHarness({
+    keepSavedNoteAndDeposit: true,
+    pricingChanged: true,
+    price: { total_minor: 50000, deposit_minor: 30000, balance_minor: 20000, deposit_overridden: true },
+    confirmResult: false
+  });
+  await cancelled.saveBookingDetails(cancelled.booking, cancelled.form);
+  assert.equal(cancelled.prompts.length, 1);
+  assert.match(cancelled.prompts[0], /300 lei.*225 lei/);
+  assert.equal(cancelled.calls.length, 0);
+  assert.equal(cancelled.closeCount(), 0);
+  assert.equal(cancelled.toasts[0].state, "error");
+
+  const accepted = saveHarness({
+    keepSavedNoteAndDeposit: true,
+    pricingChanged: true,
+    price: { total_minor: 50000, deposit_minor: 30000, balance_minor: 20000, deposit_overridden: true },
+    confirmResult: true
+  });
+  await accepted.saveBookingDetails(accepted.booking, accepted.form);
+  assert.equal(accepted.prompts.length, 1);
+  assert.equal(accepted.calls[0][2].resetDepositOverride, true);
+  assert.equal(accepted.calls[0][2].quoteId, "q_recalc");
+  assert.equal(accepted.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
+});
+
+test("save resets manual deposit override and persists the newly quoted note when preservation is unchecked", async () => {
   const replacing = saveHarness({ keepSavedNoteAndDeposit: false });
   await replacing.saveBookingDetails(replacing.booking, replacing.form);
   assert.equal(JSON.stringify(replacing.refreshCalls), JSON.stringify([{ forceFresh: true }]));
   assert.deepEqual(replacing.events, ["editBooking", "close"]);
+  assert.equal(replacing.calls[0][2].resetDepositOverride, true);
+  assert.equal(replacing.calls[0][2].quoteId, "q_recalc");
   assert.equal(replacing.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
   assert.equal(replacing.closeCount(), 1);
+});
+
+test("bookingPriceSummary and dailyAvailabilityToOccupancy handle stored prices and remote calendar states", () => {
+  const { bookingPriceSummary, dailyAvailabilityToOccupancy } = evaluate(
+    ["bookingPriceSummary", "dailyAvailabilityToOccupancy"],
+    "({ bookingPriceSummary, dailyAvailabilityToOccupancy })",
+    {}
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(bookingPriceSummary({ price: { total_minor: 35000, deposit_minor: 10500, balance_minor: 24500, deposit_overridden: true } }))),
+    { total: 350, deposit: 105, balance: 245, depositOverridden: true }
+  );
+  const occupancy = JSON.parse(JSON.stringify(dailyAvailabilityToOccupancy([
+    { date: "2027-07-01", state: "available" },
+    { date: "2027-07-02", state: "check_in", booking_status: "approved" },
+    { date: "2027-07-03", state: "booked", booking_status: "approved" },
+    { date: "2027-07-04", state: "changeover_to_pending", booking_status: "pending" },
+    { date: "2027-07-05", state: "check_out", booking_status: "pending" },
+    { date: "2027-07-06", state: "closed" }
+  ])));
+  assert.deepEqual(occupancy, {
+    "2027-07-01": { am: "available", pm: "available" },
+    "2027-07-02": { am: "available", pm: "booked" },
+    "2027-07-03": { am: "booked", pm: "booked" },
+    "2027-07-04": { am: "booked", pm: "pending" },
+    "2027-07-05": { am: "pending", pm: "available" },
+    "2027-07-06": { am: "booked", pm: "booked" }
+  });
 });
 
 test("Marina note checkbox replaces only the quoted pricing line without a separate deposit write", async () => {
