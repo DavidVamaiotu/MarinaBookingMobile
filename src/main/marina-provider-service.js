@@ -368,6 +368,8 @@ function bookingPatchBody(current, patch, resources) {
     body.facility_ids = quote.facility_ids;
     if (patch.quoteId) body.quote_id = String(patch.quoteId);
   }
+  if (patch.totalMinor !== undefined) body.total_minor = Number(patch.totalMinor);
+  if (patch.depositMinor !== undefined) body.deposit_minor = Number(patch.depositMinor);
   if (patch.resetDepositOverride) {
     body.reset_deposit_override = true;
     if (patch.quoteId) body.quote_id = String(patch.quoteId);
@@ -839,7 +841,7 @@ class MarinaBookingProvider extends EventEmitter {
     const authoritative = returnedId !== undefined && String(returnedId) === booking.providerId ? returned : {};
     const hasNoteMutation = Object.prototype.hasOwnProperty.call(mutationBody || {}, "internal_note");
     const noteOverride = hasNoteMutation ? String(mutationBody.internal_note ?? "") : undefined;
-    if (mutationBody?.reset_deposit_override) this.manualDepositOverrides.delete(booking.providerId);
+    if (mutationBody?.reset_deposit_override || mutationBody?.deposit_minor !== undefined || mutationBody?.total_minor !== undefined) this.manualDepositOverrides.delete(booking.providerId);
     const normalized = this.storeMutationBooking(normalizeBooking({
       ...this.bookingSnapshot(booking),
       ...mutationBody,

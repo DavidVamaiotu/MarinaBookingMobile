@@ -997,6 +997,8 @@ if (!window.marina) {
       body.facility_ids = quote.facility_ids;
       if (patch.quoteId) body.quote_id = String(patch.quoteId);
     }
+    if (patch.totalMinor !== undefined) body.total_minor = Number(patch.totalMinor);
+    if (patch.depositMinor !== undefined) body.deposit_minor = Number(patch.depositMinor);
     if (patch.resetDepositOverride) {
       body.reset_deposit_override = true;
       if (patch.quoteId) body.quote_id = String(patch.quoteId);
@@ -1175,7 +1177,7 @@ if (!window.marina) {
         }
         const hasNoteMutation = Object.prototype.hasOwnProperty.call(body, "internal_note");
         const noteOverride = hasNoteMutation ? String(body.internal_note ?? "") : undefined;
-        if (body.reset_deposit_override) marinaManualDepositOverrides.delete(marinaOverrideKey(source, booking.providerId));
+        if (body.reset_deposit_override || body.deposit_minor !== undefined || body.total_minor !== undefined) marinaManualDepositOverrides.delete(marinaOverrideKey(source, booking.providerId));
         const normalized = await storeMarinaMutationBooking({ ...marinaBookingSnapshot(booking), ...body, ...result, ...(hasNoteMutation ? { internal_note: noteOverride } : {}), id: booking.providerId }, hasNoteMutation ? { noteOverride } : {}, source, generation);
         scheduleMarinaRefresh(source);
         return normalized;

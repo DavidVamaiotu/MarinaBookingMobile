@@ -70,3 +70,12 @@ test("pricing note update appends pricing line when note has no pre-existing pri
   const emptyResult = PricingNote.update("", 50, 200);
   assert.equal(emptyResult.note, "Cost total: 200 RON, Depozit: 50 RON, Rest: 150 RON");
 });
+
+test("pricing note accepts lei, Avans, and omitted currency when staff edit notes manually", () => {
+  const withLei = "Cost total: 850 lei, Avans: 250 lei, Rest: 600 lei";
+  assert.deepEqual(PricingNote.parse(withLei), { deposit: 250, total: 850, balance: 600, text: withLei, index: 0 });
+  assert.equal(PricingNote.update(withLei, 250, 850).note, "Cost total: 850 RON, Depozit: 250 RON, Rest: 600 RON");
+  const plain = "Cost total: 850, Depozit: 200, Rest: 700";
+  assert.deepEqual(PricingNote.parse(plain), { deposit: 200, total: 850, balance: 700, text: plain, index: 0 });
+  assert.equal(PricingNote.update(plain, 200, 850).note, "Cost total: 850 RON, Depozit: 200 RON, Rest: 650 RON");
+});

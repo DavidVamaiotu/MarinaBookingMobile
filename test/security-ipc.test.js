@@ -35,6 +35,8 @@ test("typed IPC validators reject malformed booking intent", () => {
   assert.deepEqual(validate.quoteInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } }, facilityIds: [7, 4] }).facilityIds, [4, 7]);
   assert.deepEqual(validate.bookingPatch({ facilityIds: [] }).facilityIds, []);
   assert.equal(validate.bookingPatch({ resetDepositOverride: true }).resetDepositOverride, true);
+  assert.deepEqual(validate.bookingPatch({ totalMinor: 85000, depositMinor: 25000 }), { totalMinor: 85000, depositMinor: 25000, sendEmail: false });
+  assert.throws(() => validate.bookingPatch({ totalMinor: 20000, depositMinor: 30000 }), /Avansul nu poate depăși costul total/);
   assert.throws(() => validate.bookingInput({ resourceId: 4, dates: ["2026-07-20"], formData: { name: { value: "A", type: "text" } }, facilityIds: [4, 4] }), /duplicate/);
 });
 

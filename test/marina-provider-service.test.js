@@ -223,6 +223,7 @@ test("provider carries canonical facility selections through quotes and pricing 
   assert.deepEqual(bookingPatchBody(current, { facilityIds: [], quoteId: "quote-remove" }, resources).facility_ids, []);
   assert.deepEqual(bookingPatchBody(current, { note: "fără schimbare de preț" }, resources), { internal_note: "fără schimbare de preț" });
   assert.deepEqual(bookingPatchBody(current, { resetDepositOverride: true, quoteId: "quote-reset" }, resources), { reset_deposit_override: true, quote_id: "quote-reset" });
+  assert.deepEqual(bookingPatchBody(current, { totalMinor: 85000, depositMinor: 25000 }, resources), { total_minor: 85000, deposit_minor: 25000 });
   assert.deepEqual(bookingPatchBody(current, { sendEmail: false }, resources), { send_email: false });
 });
 

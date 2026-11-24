@@ -1749,8 +1749,9 @@ function renderCreateSummary() {
     dateSummary.innerHTML = "Date: <span>…</span> – <span>…</span> nopți";
   }
   if (editingDetails()) {
-    if (createQuote?.valid) renderDetailsPrice(createPricingNote(createQuote), createQuote);
-    else renderDetailsPrice(form.elements.note.value);
+    const keepNote = form.elements.keepSavedNoteAndDeposit?.checked !== false;
+    if (!keepNote && createQuote?.valid) renderDetailsPrice(createPricingNote(createQuote), createQuote);
+    else renderDetailsPrice(form.elements.note.value, null);
   } else {
     $("#createTotalCost").textContent = createQuote ? formatCreateMoney(createQuote.total, createQuote.formatted?.total) : "—";
     $("#createDepositCost").textContent = createQuote ? formatCreateMoney(createQuote.deposit, createQuote.formatted?.deposit) : "—";
@@ -2390,7 +2391,8 @@ function populateDetails(booking, reset = true) {
     renderCreateCalendar();
     if (initialDates.valid && quoteState === "stale") schedulePriceCheck();
   }
-  renderDetailsPrice(createQuote?.valid ? createPricingNote(createQuote) : form.elements.note.value, createQuote, booking);
+  const showRecalculatedPreview = !form.elements.keepSavedNoteAndDeposit?.checked && createQuote?.valid;
+  renderDetailsPrice(showRecalculatedPreview ? createPricingNote(createQuote) : form.elements.note.value, showRecalculatedPreview ? createQuote : null, booking);
   const clientName = [BookingFields.value(booking, "firstName"), BookingFields.value(booking, "lastName")].filter(Boolean).join(" ").trim();
   $("#detailsTitle").textContent = clientName || `Rezervarea ${booking.serverId || "locală"}`;
   detailsPanel.hidden = false;
@@ -2416,14 +2418,17 @@ function bookingPriceSummary(booking) {
 
 function renderDetailsPrice(note, quote = null, booking = bookingById(selectedBookingId)) {
   const marinaQuote = quote?.valid ? quote : null;
-  const storedPrice = marinaQuote ? null : bookingPriceSummary(booking);
-  const pricing = marinaQuote || storedPrice ? null : PricingNote.parse(note);
+  const parsedNote = marinaQuote ? null : PricingNote.parse(note);
+  const pricing = parsedNote
+    ? { total: parsedNote.total, deposit: parsedNote.deposit, balance: Math.round((parsedNote.total - parsedNote.deposit) * 100) / 100 }
+    : null;
+  const storedPrice = marinaQuote || pricing ? null : bookingPriceSummary(booking);
   const values = marinaQuote
     ? [marinaQuote.total, marinaQuote.deposit, marinaQuote.balance].map((value) => `${formatCreateMoney(value).replace(/\s*lei$/i, "")} RON`)
-    : storedPrice
-      ? [storedPrice.total, storedPrice.deposit, storedPrice.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
-      : pricing
-        ? [pricing.total, pricing.deposit, pricing.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
+    : pricing
+      ? [pricing.total, pricing.deposit, pricing.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
+      : storedPrice
+        ? [storedPrice.total, storedPrice.deposit, storedPrice.balance].map((value) => `${PricingNote.formatAmount(value)} RON`)
         : ["—", "—", "—"];
   $("#detailsPriceTotal").textContent = values[0];
   $("#detailsPriceDeposit").textContent = values[1];
@@ -2829,45 +2834,48 @@ async function saveBookingDetails(booking, form) {
     const savedPrice = typeof bookingPriceSummary === "function" ? bookingPriceSummary(booking) : null;
     const hasOverriddenDeposit = Boolean(savedPrice?.depositOverridden);
     let resetDepositOverride = false;
-    let preservedManualDepositNotice = false;
+    let totalMinor;
+    let depositMinor;
     let note = form.elements.note.value;
-    if (pricingChanged) {
-      if (replaceNoteAndDeposit) {
-        resetDepositOverride = true;
-        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
-      } else if (hasOverriddenDeposit && savedPrice.deposit > recalculatedQuote.total) {
+    if (replaceNoteAndDeposit) {
+      resetDepositOverride = true;
+      note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
+    } else {
+      const notePricing = PricingNote.parse(note);
+      if (notePricing) {
+        if (notePricing.deposit > notePricing.total) {
+          throw Object.assign(new Error("Avansul din notă nu poate depăși costul total."), { code: "invalid_note_price", permanent: true });
+        }
+        note = PricingNote.update(note, notePricing.deposit, notePricing.total).note;
+        const parsedTotalMinor = Math.round(notePricing.total * 100);
+        const parsedDepositMinor = Math.round(notePricing.deposit * 100);
+        const savedTotalMinor = savedPrice ? Math.round(savedPrice.total * 100) : null;
+        const savedDepositMinor = savedPrice ? Math.round(savedPrice.deposit * 100) : null;
+        const noteDiffersFromSaved = !savedPrice || parsedTotalMinor !== savedTotalMinor || parsedDepositMinor !== savedDepositMinor;
+        if (pricingChanged || noteDiffersFromSaved) {
+          totalMinor = parsedTotalMinor;
+          depositMinor = parsedDepositMinor;
+        }
+      } else if (pricingChanged && hasOverriddenDeposit && savedPrice.deposit > recalculatedQuote.total) {
         const accepted = confirm(
           `Avansul salvat (${PricingNote.formatAmount(savedPrice.deposit)} lei) depășește noul cost total (${PricingNote.formatAmount(recalculatedQuote.total)} lei).\n\n` +
-          `Apasă OK pentru a salva cu noul avans calculat (${PricingNote.formatAmount(recalculatedQuote.deposit)} lei) și nota actualizată, sau Anulează pentru a modifica mai întâi avansul din Plată → Schimbă avansul.`
+          `Apasă OK pentru a salva cu noul avans calculat (${PricingNote.formatAmount(recalculatedQuote.deposit)} lei), sau Anulează pentru a modifica mai întâi avansul din Plată → Schimbă avansul.`
         );
         if (!accepted) {
           if (typeof showToast === "function") showToast("Modifică avansul din Plată → Schimbă avansul înainte de a salva noul sejur.", "error");
           return;
         }
         resetDepositOverride = true;
-        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
-      } else if (hasOverriddenDeposit) {
-        const balance = Math.round((recalculatedQuote.total - savedPrice.deposit) * 100) / 100;
-        note = recalculatedBookingNote({ ...recalculatedQuote, deposit: savedPrice.deposit, balance }, form.elements.note.value);
-        preservedManualDepositNotice = Math.abs(savedPrice.deposit - recalculatedQuote.deposit) >= 0.01;
-      } else {
-        note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
       }
-    } else if (replaceNoteAndDeposit) {
-      resetDepositOverride = true;
-      note = recalculatedBookingNote(recalculatedQuote, form.elements.note.value);
     }
     if (source !== activeWorkspace || selectedBookingId !== booking.localId) throw workspaceChangedError();
     const formData = detailsFormData(booking, form);
     const outboundFormData = BookingFields.prepareFormData(formData, booking.resourceId);
     const facilityIds = typeof selectedFacilityIds === "function" ? selectedFacilityIds(form) : (booking.facilityIds || []);
-    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source, facilityIds, ...(resetDepositOverride ? { resetDepositOverride: true } : {}) };
+    const editInput = { resourceId, sourceResourceId: booking.resourceId, dates, formData: outboundFormData, bookingFormType, note, sendEmail: Boolean(form.elements.sendEmail.checked), source, facilityIds, ...(totalMinor !== undefined ? { totalMinor } : {}), ...(depositMinor !== undefined ? { depositMinor } : {}), ...(resetDepositOverride ? { resetDepositOverride: true } : {}) };
     if (marina && (pricingChanged || resetDepositOverride) && createQuote?.quoteId) editInput.quoteId = createQuote.quoteId;
     await runApiAction("editBooking", booking.localId, editInput);
-    if (preservedManualDepositNotice && typeof showToast === "function") {
-      showToast(`Avansul manual (${PricingNote.formatAmount(savedPrice.deposit)} lei) a fost păstrat. Îl poți modifica din Plată → Schimbă avansul.`, "success");
-    }
-    if (marina && (pricingChanged || replaceNoteAndDeposit || String(note) !== String(booking.note || ""))) {
+    if (marina && (pricingChanged || replaceNoteAndDeposit || totalMinor !== undefined || depositMinor !== undefined || String(note) !== String(booking.note || ""))) {
       paymentSnapshots.delete(booking.localId);
       paymentSnapshotErrors.delete(booking.localId);
     }
@@ -2938,14 +2946,19 @@ $("#detailsForm").addEventListener("submit", async (event) => {
   catch (error) { showError(error); }
 });
 $("#detailsForm").addEventListener("input", (event) => {
-  if (event.target.matches('[name="note"]') && !createQuote?.valid) renderDetailsPrice(event.target.value);
+  if (event.target.matches('[name="note"]')) {
+    const keepNote = event.currentTarget.elements.keepSavedNoteAndDeposit.checked;
+    renderDetailsPrice(event.target.value, keepNote ? null : createQuote);
+  }
   if (event.target.matches("[data-extra-field]") && isPricingExtraField(event.target.dataset.extraField)) schedulePriceCheck();
 });
 $("#detailsFacilities").addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.adults.addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.children.addEventListener("change", schedulePriceCheck);
 $("#detailsForm").elements.keepSavedNoteAndDeposit.addEventListener("change", (event) => {
-  if (event.target.checked || (createQuote?.valid && createQuoteKey === currentQuoteKey($("#detailsForm")))) return;
+  const form = $("#detailsForm");
+  renderDetailsPrice(form.elements.note.value, event.target.checked ? null : createQuote);
+  if (event.target.checked || (createQuote?.valid && createQuoteKey === currentQuoteKey(form))) return;
   schedulePriceCheck();
 });
 

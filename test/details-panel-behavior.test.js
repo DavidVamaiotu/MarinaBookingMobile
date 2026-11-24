@@ -503,19 +503,35 @@ function saveHarness({
   return { booking, form, saveBookingDetails, calls, events, refreshCalls, prompts, toasts, paymentSnapshots, paymentSnapshotErrors, closeCount: () => closeCount };
 }
 
-test("repricing updates the note to reflect the actual new price even when preservation is checked", async () => {
+test("repricing keeps the existing note untouched when preservation is checked and note has no price", async () => {
   const preserving = saveHarness();
   await preserving.saveBookingDetails(preserving.booking, preserving.form);
   assert.equal(JSON.stringify(preserving.refreshCalls), JSON.stringify([{ forceFresh: true }]));
   assert.equal(preserving.calls.length, 1);
   assert.equal(preserving.calls[0][0], "editBooking");
-  assert.equal(preserving.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
+  assert.equal(preserving.calls[0][2].note, "Nota veche fără preț");
+  assert.equal(preserving.calls[0][2].totalMinor, undefined);
+  assert.equal(preserving.calls[0][2].depositMinor, undefined);
   assert.equal(preserving.calls[0][2].resetDepositOverride, undefined);
   assert.deepEqual(preserving.events, ["editBooking", "close"]);
   assert.equal(preserving.closeCount(), 1);
 });
 
-test("repricing with a manual deposit that fits keeps the manual deposit in both DB and note", async () => {
+test("editing the price inside the note updates totalMinor and depositMinor and normalizes balance", async () => {
+  const harness = saveHarness({
+    keepSavedNoteAndDeposit: true,
+    pricingChanged: false,
+    note: "Client fidel\nCost total: 850 RON, Depozit: 250 RON, Rest: 700 RON",
+    price: { total_minor: 100000, deposit_minor: 30000, balance_minor: 70000 }
+  });
+  await harness.saveBookingDetails(harness.booking, harness.form);
+  assert.deepEqual(harness.refreshCalls, []);
+  assert.equal(harness.calls[0][2].note, "Client fidel\nCost total: 850 RON, Depozit: 250 RON, Rest: 600 RON");
+  assert.equal(harness.calls[0][2].totalMinor, 85000);
+  assert.equal(harness.calls[0][2].depositMinor, 25000);
+});
+
+test("editing dates while keeping a priced note preserves the note price in DB", async () => {
   const harness = saveHarness({
     keepSavedNoteAndDeposit: true,
     pricingChanged: true,
@@ -523,13 +539,22 @@ test("repricing with a manual deposit that fits keeps the manual deposit in both
     price: { total_minor: 40000, deposit_minor: 10000, balance_minor: 30000, deposit_overridden: true }
   });
   await harness.saveBookingDetails(harness.booking, harness.form);
-  assert.equal(harness.calls[0][2].note, "Client fidel\nCost total: 225 RON, Depozit: 100 RON, Rest: 125 RON");
-  assert.equal(harness.calls[0][2].resetDepositOverride, undefined);
-  assert.equal(harness.toasts.length, 1);
-  assert.match(harness.toasts[0].message, /Avansul manual \(100 lei\) a fost păstrat/);
+  assert.equal(harness.calls[0][2].note, "Client fidel\nCost total: 400 RON, Depozit: 100 RON, Rest: 300 RON");
+  assert.equal(harness.calls[0][2].totalMinor, 40000);
+  assert.equal(harness.calls[0][2].depositMinor, 10000);
 });
 
-test("repricing when a manual deposit exceeds the new total prompts before resetting or aborting", async () => {
+test("editing a note where deposit exceeds total is rejected before saving", async () => {
+  const harness = saveHarness({
+    keepSavedNoteAndDeposit: true,
+    pricingChanged: false,
+    note: "Cost total: 200 RON, Depozit: 300 RON, Rest: 0 RON"
+  });
+  await assert.rejects(() => harness.saveBookingDetails(harness.booking, harness.form), /Avansul din notă nu poate depăși costul total/);
+  assert.equal(harness.calls.length, 0);
+});
+
+test("repricing an unpriced note when a manual deposit exceeds the new total prompts before resetting or aborting", async () => {
   const cancelled = saveHarness({
     keepSavedNoteAndDeposit: true,
     pricingChanged: true,
@@ -553,7 +578,7 @@ test("repricing when a manual deposit exceeds the new total prompts before reset
   assert.equal(accepted.prompts.length, 1);
   assert.equal(accepted.calls[0][2].resetDepositOverride, true);
   assert.equal(accepted.calls[0][2].quoteId, "q_recalc");
-  assert.equal(accepted.calls[0][2].note, "Nota veche fără preț\nCost total: 225 RON, Depozit: 75 RON, Rest: 150 RON");
+  assert.equal(accepted.calls[0][2].note, "Nota veche fără preț");
 });
 
 test("save resets manual deposit override and persists the newly quoted note when preservation is unchecked", async () => {

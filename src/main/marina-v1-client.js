@@ -71,6 +71,8 @@ function bookingRequestBody(body, { expectedVersion } = {}) {
   const result = { ...(body || {}) };
   if (result.resource_id !== undefined) result.resource_id = integerField(result.resource_id, "resource_id");
   if (result.exclude_booking_id !== undefined) result.exclude_booking_id = integerField(result.exclude_booking_id, "exclude_booking_id");
+  if (result.total_minor !== undefined) result.total_minor = integerField(result.total_minor, "total_minor");
+  if (result.deposit_minor !== undefined) result.deposit_minor = integerField(result.deposit_minor, "deposit_minor");
   if (expectedVersion !== undefined && expectedVersion !== null) result.expected_version = integerField(expectedVersion, "expected_version");
   if (Array.isArray(result.periods)) result.periods = result.periods.map((period) => ({
     ...period,

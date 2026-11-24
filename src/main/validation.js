@@ -107,6 +107,19 @@ function bookingPatch(value) {
   if (value.facilityIds !== undefined) result.facilityIds = facilityIds(value.facilityIds);
   if (value.bookingFormType !== undefined) result.bookingFormType = text(value.bookingFormType, "bookingFormType", 80);
   if (value.quoteId !== undefined) result.quoteId = text(value.quoteId, "quoteId", 200);
+  if (value.totalMinor !== undefined) {
+    const totalMinor = Number(value.totalMinor);
+    if (!Number.isSafeInteger(totalMinor) || totalMinor < 0) throw new TypeError("totalMinor trebuie să fie un număr întreg nenegativ.");
+    result.totalMinor = totalMinor;
+  }
+  if (value.depositMinor !== undefined) {
+    const depositMinor = Number(value.depositMinor);
+    if (!Number.isSafeInteger(depositMinor) || depositMinor < 0) throw new TypeError("depositMinor trebuie să fie un număr întreg nenegativ.");
+    result.depositMinor = depositMinor;
+  }
+  if (result.totalMinor !== undefined && result.depositMinor !== undefined && result.depositMinor > result.totalMinor) {
+    throw new TypeError("Avansul nu poate depăși costul total.");
+  }
   if (value.resetDepositOverride !== undefined) result.resetDepositOverride = Boolean(value.resetDepositOverride);
   if (value.status !== undefined) {
     result.status = text(value.status, "status", 20, true);

@@ -6,7 +6,7 @@
   "use strict";
 
   const AMOUNT = "(?:\\d+\\.\\d{1,2}|\\d+(?:[.\\s]\\d{3})*(?:,\\d{1,2})?)";
-  const PRICING_LINE = new RegExp(`Cost total:\\s*(${AMOUNT})\\s*RON,\\s*Depozit:\\s*(${AMOUNT})\\s*RON,\\s*Rest:\\s*(${AMOUNT})\\s*RON(?![\\d.,])`, "i");
+  const PRICING_LINE = new RegExp(`Cost total:[ \\t]*(${AMOUNT})(?:[ \\t]*(?:RON|lei)\\b)?,[ \\t]*(?:Depozit|Avans):[ \\t]*(${AMOUNT})(?:[ \\t]*(?:RON|lei)\\b)?,[ \\t]*Rest:[ \\t]*(${AMOUNT})(?:[ \\t]*(?:RON|lei)\\b)?(?![\\d.,])`, "i");
   const LEGACY_PRICING_LINE = new RegExp(`Avans:\\s*(${AMOUNT}),\\s*Cost:\\s*(${AMOUNT}),\\s*Rest:\\s*(${AMOUNT})(?![\\d.,])`, "i");
   const ANY_PRICING_LINE = new RegExp(`(?:${PRICING_LINE.source})|(?:${LEGACY_PRICING_LINE.source})`, "gi");
   const AMOUNT_FORMATTER = new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
